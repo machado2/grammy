@@ -18,7 +18,7 @@ let popupHideTimeout = null;
 const DEBOUNCE_MS = 600;
 const STORAGE_KEY_API = 'grammy_api_key';
 const STORAGE_KEY_MODEL = 'grammy_model';
-const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'gpt-5-mini';
 
 // Settings management
 function getApiKey() {
@@ -59,6 +59,27 @@ closeSettingsBtn.addEventListener('click', closeSettings);
 saveSettingsBtn.addEventListener('click', saveSettings);
 settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) closeSettings();
+});
+
+apiKeyInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    modelInput.focus();
+  }
+});
+
+modelInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    saveSettings();
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && settingsModal.classList.contains('open')) {
+    e.preventDefault();
+    closeSettings();
+  }
 });
 
 function setStatus(text) {
@@ -304,15 +325,14 @@ Return ONLY valid JSON with this exact schema:
 {
   "matches": [
     {
-      "message": "...",
-      "start": 0,
-      "end": 0,
-      "replacement": "..."
+      "message": "short explanation",
+      "original": "exact text to replace",
+      "replacement": "corrected text"
     }
   ]
 }
 
-Where start/end are CHARACTER indices (Unicode scalar value count) into the ORIGINAL input text. end is exclusive.
+IMPORTANT: The "original" field must contain the EXACT substring from the input that should be replaced (copy it precisely, including spacing).
 If there is nothing to change, return {"matches": []}.`;
 
 function generateId() {
@@ -320,40 +340,43 @@ function generateId() {
 }
 
 function convertLlmMatchesToSuggestions(text, matches) {
-  const chars = [...text];
-  const charLen = chars.length;
-  
-  // Build byte boundaries from char indices
-  const boundaries = [];
-  let bytePos = 0;
-  for (const char of chars) {
-    boundaries.push(bytePos);
-    bytePos += char.length;
-  }
-  boundaries.push(bytePos);
-
   const out = [];
+  
   for (const m of matches) {
-    if (m.start > m.end || m.end > charLen) continue;
+    if (!m.original || !m.replacement) continue;
+    if (m.original === m.replacement) continue;
     
-    const startB = boundaries[m.start];
-    const endB = boundaries[m.end];
-    
-    if (startB === undefined || endB === undefined) continue;
-    if (startB > endB || endB > text.length) continue;
-    
-    const original = text.slice(startB, endB);
-    if (original === m.replacement) continue;
-    
-    out.push({
-      id: generateId(),
-      message: m.message,
-      offset: startB,
-      length: endB - startB,
-      original: original,
-      replacement: m.replacement,
-      rule: 'llm'
-    });
+    // Find the original text in the input
+    const offset = text.indexOf(m.original);
+    if (offset === -1) {
+      // Try case-insensitive search as fallback
+      const lowerText = text.toLowerCase();
+      const lowerOriginal = m.original.toLowerCase();
+      const altOffset = lowerText.indexOf(lowerOriginal);
+      if (altOffset === -1) continue;
+      
+      // Use the actual text at that position
+      const actualOriginal = text.slice(altOffset, altOffset + m.original.length);
+      out.push({
+        id: generateId(),
+        message: m.message,
+        offset: altOffset,
+        length: actualOriginal.length,
+        original: actualOriginal,
+        replacement: m.replacement,
+        rule: 'llm'
+      });
+    } else {
+      out.push({
+        id: generateId(),
+        message: m.message,
+        offset: offset,
+        length: m.original.length,
+        original: m.original,
+        replacement: m.replacement,
+        rule: 'llm'
+      });
+    }
   }
 
   out.sort((a, b) => a.offset - b.offset);

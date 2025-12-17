@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Grammy</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="app">
       <header class="header">
         <div class="brand">Grammy</div>
-        <button id="settingsBtn" class="settingsBtn" title="Settings">⚙️</button>
+        <button id="settingsBtn" type="button" class="settingsBtn" title="Settings">⚙️</button>
       </header>
 
       <main class="main">
@@ -38,7 +38,7 @@
       <div class="modalContent">
         <div class="modalHeader">
           <h2 class="modalTitle">Settings</h2>
-          <button id="closeSettingsBtn" class="modalClose">&times;</button>
+          <button id="closeSettingsBtn" type="button" class="modalClose">&times;</button>
         </div>
         <div class="modalBody">
           <div class="formGroup">
@@ -48,16 +48,16 @@
           </div>
           <div class="formGroup">
             <label class="formLabel">Model</label>
-            <input type="text" id="modelInput" class="formInput" placeholder="gpt-4o-mini" />
-            <p class="formHint">Default: gpt-4o-mini. You can use gpt-4o, gpt-4-turbo, etc.</p>
+            <input type="text" id="modelInput" class="formInput" placeholder="gpt-5-mini" />
+            <p class="formHint">Default: gpt-5-mini. You can use gpt-5, gpt-4o, etc.</p>
           </div>
         </div>
         <div class="modalFooter">
-          <button id="saveSettingsBtn" class="btn primary">Save</button>
+          <button id="saveSettingsBtn" type="button" class="btn primary">Save</button>
         </div>
       </div>
     </div>
 
-    <script src="/app.js"></script>
+    <script src="app.js"></script>
   </body>
 </html>

@@ -4,16 +4,16 @@ A small Grammarly-like web app (conservative suggestions + click-to-apply) that 
 
 ## Run
 
-Simply serve the `frontend/` folder with any static file server:
+Simply serve this folder with any static file server:
 
 ```bash
 # Using Python
-python -m http.server 8000 -d frontend
+python -m http.server 8000
 
 # Using Node.js (npx)
-npx serve frontend
+npx serve .
 
-# Or just open frontend/index.html directly in your browser
+# Or just open index.html directly in your browser
 ```
 
 Then open http://localhost:8000 (or the appropriate URL for your server).
@@ -22,7 +22,7 @@ Then open http://localhost:8000 (or the appropriate URL for your server).
 
 1. Click the ⚙️ settings button in the header
 2. Enter your OpenAI API key
-3. Optionally change the model (default: `gpt-4o-mini`)
+3. Optionally change the model (default: `gpt-5-mini`)
 4. Click Save
 
 Your API key is stored in your browser's localStorage and is only sent directly to OpenAI's API.
