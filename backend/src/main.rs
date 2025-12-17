@@ -504,7 +504,7 @@ async fn api_check(State(state): State<AppState>, Json(req): Json<CheckRequest>)
 }
 
 async fn api_apply(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(req): Json<ApplyRequest>,
 ) -> impl IntoResponse {
     let s = req.suggestion;
@@ -538,19 +538,7 @@ async fn api_apply(
     new_text.push_str(&s.replacement);
     new_text.push_str(&req.text[end..]);
 
-    let matches = match state.llm.check(&new_text).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("LLM check failed after apply: {}", e);
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse {
-                    error: format!("LLM check failed: {}", e),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    (StatusCode::OK, Json(ApplyResponse { text: new_text, matches })).into_response()
+    // Return empty matches - frontend will handle offset adjustment for remaining suggestions
+    // This makes apply instant instead of waiting for another LLM call
+    (StatusCode::OK, Json(ApplyResponse { text: new_text, matches: vec![] })).into_response()
 }

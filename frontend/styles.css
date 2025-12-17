@@ -46,27 +46,24 @@ body {
 
 .main {
   display: grid;
-  grid-template-columns: 1.4fr 0.9fr;
+  grid-template-columns: 1.4fr 0.6fr;
   gap: 16px;
   padding: 16px;
-  max-width: 1200px;
+  max-width: 1100px;
   width: 100%;
   margin: 0 auto;
 }
 
-.editor,
-.sidebar {
+.editor {
   border: 1px solid var(--border);
   background: rgba(18, 26, 50, 0.6);
   border-radius: 12px;
   overflow: hidden;
-}
-
-.editor {
   padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  width: 100%;
 }
 
 .label {
@@ -74,28 +71,113 @@ body {
   color: var(--muted);
 }
 
-textarea {
+.editable {
   width: 100%;
   min-height: 520px;
-  resize: vertical;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: rgba(15, 23, 48, 0.85);
   color: var(--text);
   padding: 12px;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.7;
   outline: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-y: auto;
 }
 
-textarea:focus {
+.editable:focus {
   border-color: rgba(110, 168, 254, 0.6);
   box-shadow: 0 0 0 3px rgba(110, 168, 254, 0.14);
+}
+
+.editable:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.suggestion {
+  background: rgba(255, 107, 107, 0.15);
+  border-bottom: 2px solid var(--danger);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.suggestion:hover,
+.suggestion.highlight {
+  background: rgba(255, 107, 107, 0.3);
+}
+
+.popup {
+  position: absolute;
+  z-index: 1000;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  max-width: 320px;
+  animation: popupIn 0.15s ease-out;
+}
+
+@keyframes popupIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.popupMsg {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.popupBody {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.popupReplacement {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent2);
+  flex: 1;
+}
+
+.popupBtn {
+  border: none;
+  background: var(--accent2);
+  color: #0b1020;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  transition: opacity 0.15s;
+}
+
+.popupBtn:hover {
+  opacity: 0.85;
 }
 
 .hint {
   font-size: 12px;
   color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hintSep {
+  opacity: 0.5;
 }
 
 .btn {
@@ -117,10 +199,16 @@ textarea:focus {
   cursor: not-allowed;
 }
 
-.sidebarHeader {
+.sidebar {
+  border: 1px solid var(--border);
+  background: rgba(18, 26, 50, 0.6);
+  border-radius: 12px;
+  overflow: hidden;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  flex-direction: column;
+}
+
+.sidebarHeader {
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   background: rgba(15, 23, 48, 0.65);
@@ -128,11 +216,7 @@ textarea:focus {
 
 .sidebarTitle {
   font-weight: 600;
-}
-
-.status {
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 14px;
 }
 
 .suggestions {
@@ -140,52 +224,85 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow-y: auto;
+  flex: 1;
 }
 
 .card {
   border: 1px solid var(--border);
   background: rgba(15, 23, 48, 0.7);
-  border-radius: 12px;
+  border-radius: 10px;
   padding: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
 }
 
-.cardTitle {
-  font-size: 13px;
-  margin-bottom: 8px;
+.card:hover {
+  border-color: rgba(110, 168, 254, 0.4);
+  background: rgba(15, 23, 48, 0.9);
 }
 
-.snippet {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+.cardMsg {
   font-size: 12px;
   color: var(--muted);
-  padding: 8px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: rgba(11, 16, 32, 0.55);
-  overflow-x: auto;
-  white-space: pre;
+  margin-bottom: 6px;
 }
 
-.cardFooter {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
+.cardOriginal {
+  font-size: 13px;
+  color: var(--danger);
+  text-decoration: line-through;
+  opacity: 0.8;
 }
 
-.pill {
-  font-size: 11px;
+.cardArrow {
   color: var(--muted);
-  border: 1px solid var(--border);
-  padding: 2px 8px;
-  border-radius: 999px;
+  margin: 0 6px;
+  font-size: 12px;
 }
 
-@media (max-width: 980px) {
+.cardReplacement {
+  font-size: 13px;
+  color: var(--accent2);
+  font-weight: 600;
+}
+
+.cardBody {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cardAccept {
+  margin-top: 8px;
+  border: none;
+  background: var(--accent2);
+  color: #0b1020;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 11px;
+  transition: opacity 0.15s;
+}
+
+.cardAccept:hover {
+  opacity: 0.85;
+}
+
+.noSuggestions {
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+  padding: 20px 10px;
+}
+
+@media (max-width: 800px) {
   .main {
     grid-template-columns: 1fr;
   }
-  textarea {
+  .editable {
     min-height: 360px;
   }
 }
