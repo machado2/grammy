@@ -19,19 +19,32 @@ const COL_DANGER: egui::Color32 = egui::Color32::from_rgb(255, 107, 107);
 
 // Request message sent to the API thread
 #[derive(Debug)]
+enum ApiJob {
+    Grammar {
+        text: String,
+        api_key: String,
+        model: String,
+        provider: ApiProvider,
+    },
+    TestConnection {
+        api_key: String,
+        provider: ApiProvider,
+    },
+}
+
+#[derive(Debug)]
 struct ApiRequest {
-    text: String,
-    api_key: String,
-    model: String,
-    provider: ApiProvider,
+    job: ApiJob,
     request_id: u64,
 }
 
 // Response from API thread
 #[derive(Debug)]
 enum ApiResponse {
-    Success { suggestions: Vec<Suggestion>, request_id: u64 },
-    Error { message: String, request_id: u64 },
+    GrammarSuccess { suggestions: Vec<Suggestion>, request_id: u64 },
+    GrammarError { message: String, request_id: u64 },
+    TestSuccess { request_id: u64 },
+    TestError { message: String, request_id: u64 },
 }
 
 pub struct GrammyApp {
@@ -41,13 +54,20 @@ pub struct GrammyApp {
     status: String,
     config: Config,
     show_settings: bool,
-    temp_api_key: String,
+    temp_openai_api_key: String,
+    temp_openrouter_api_key: String,
     temp_model: String,
     temp_provider: ApiProvider,
+    show_api_key: bool,
+    test_status: String,
+    test_status_color: egui::Color32,
     hovered_suggestion: Option<String>,
     last_edit_time: Option<Instant>,
     is_checking: bool,
-    current_request_id: Option<u64>,
+    current_check_request_id: Option<u64>,
+    pending_recheck: bool,
+    is_testing: bool,
+    current_test_request_id: Option<u64>,
     api_sender: Sender<ApiRequest>,
     api_receiver: Receiver<ApiResponse>,
 }
@@ -69,22 +89,44 @@ impl GrammyApp {
                 eprintln!("[DEBUG] API thread received request #{}", req.request_id);
                 let tx = response_tx.clone();
                 let request_id = req.request_id;
-                
+
                 rt.block_on(async {
-                    match api::check_grammar(
-                        req.text,
-                        req.api_key,
-                        req.model,
-                        req.provider,
-                        request_id,
-                    ).await {
-                        Ok((suggestions, req_id)) => {
-                            eprintln!("[DEBUG] API thread sending success response for #{}", req_id);
-                            let _ = tx.send(ApiResponse::Success { suggestions, request_id: req_id });
-                        }
-                        Err(e) => {
-                            eprintln!("[DEBUG] API thread sending error response for #{}: {}", request_id, e);
-                            let _ = tx.send(ApiResponse::Error { message: e, request_id });
+                    match req.job {
+                        ApiJob::Grammar {
+                            text,
+                            api_key,
+                            model,
+                            provider,
+                        } => match api::check_grammar(text, api_key, model, provider, request_id).await {
+                            Ok((suggestions, req_id)) => {
+                                eprintln!("[DEBUG] API thread sending grammar success response for #{}", req_id);
+                                let _ = tx.send(ApiResponse::GrammarSuccess {
+                                    suggestions,
+                                    request_id: req_id,
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("[DEBUG] API thread sending grammar error response for #{}: {}", request_id, e);
+                                let _ = tx.send(ApiResponse::GrammarError {
+                                    message: e,
+                                    request_id,
+                                });
+                            }
+                        },
+                        ApiJob::TestConnection { api_key, provider } => {
+                            match api::test_connection(api_key, provider, request_id).await {
+                                Ok(req_id) => {
+                                    eprintln!("[DEBUG] API thread sending test success response for #{}", req_id);
+                                    let _ = tx.send(ApiResponse::TestSuccess { request_id: req_id });
+                                }
+                                Err(e) => {
+                                    eprintln!("[DEBUG] API thread sending test error response for #{}: {}", request_id, e);
+                                    let _ = tx.send(ApiResponse::TestError {
+                                        message: e,
+                                        request_id,
+                                    });
+                                }
+                            }
                         }
                     }
                 });
@@ -101,13 +143,20 @@ impl GrammyApp {
             status: "Ready".to_string(),
             config: config.clone(),
             show_settings: false,
-            temp_api_key: config.api_key,
+            temp_openai_api_key: config.openai_api_key,
+            temp_openrouter_api_key: config.openrouter_api_key,
             temp_model: config.model,
             temp_provider: config.provider,
+            show_api_key: false,
+            test_status: String::new(),
+            test_status_color: COL_MUTED,
             hovered_suggestion: None,
             last_edit_time: None,
             is_checking: false,
-            current_request_id: None,
+            current_check_request_id: None,
+            pending_recheck: false,
+            is_testing: false,
+            current_test_request_id: None,
             api_sender: request_tx,
             api_receiver: response_rx,
         }
@@ -116,9 +165,9 @@ impl GrammyApp {
     fn schedule_check(&mut self) {
         eprintln!("[DEBUG] Scheduling check, current text len={}", self.text.len());
         self.last_edit_time = Some(Instant::now());
-        
-        // If we're currently checking, the result will be discarded when it arrives
-        // because current_request_id will change
+        if self.is_checking {
+            self.pending_recheck = true;
+        }
     }
 
     fn check_text(&mut self) {
@@ -128,7 +177,7 @@ impl GrammyApp {
             self.status = "Ready".to_string();
             self.last_checked_text = self.text.clone();
             self.is_checking = false;
-            self.current_request_id = None;
+            self.current_check_request_id = None;
             return;
         }
 
@@ -138,20 +187,28 @@ impl GrammyApp {
             return;
         }
 
+        if self.is_checking {
+            eprintln!("[DEBUG] check_text: request in-flight, queueing recheck");
+            self.pending_recheck = true;
+            return;
+        }
+
         // Generate a new request ID - this invalidates any in-flight requests
         let request_id = api::next_request_id();
         eprintln!("[DEBUG] check_text: starting request #{}, text_len={}", request_id, self.text.len());
         
         self.is_checking = true;
-        self.current_request_id = Some(request_id);
+        self.current_check_request_id = Some(request_id);
         self.status = "Checking...".to_string();
         self.last_checked_text = self.text.clone();
 
         let request = ApiRequest {
-            text: self.text.clone(),
-            api_key: self.config.api_key.clone(),
-            model: self.config.model.clone(),
-            provider: self.config.provider.clone(),
+            job: ApiJob::Grammar {
+                text: self.text.clone(),
+                api_key: self.config.api_key_for_provider(&self.config.provider),
+                model: self.config.model.clone(),
+                provider: self.config.provider.clone(),
+            },
             request_id,
         };
 
@@ -159,7 +216,7 @@ impl GrammyApp {
             eprintln!("[DEBUG] Failed to send request: {}", e);
             self.status = "Internal error: failed to send request".to_string();
             self.is_checking = false;
-            self.current_request_id = None;
+            self.current_check_request_id = None;
         }
     }
 
@@ -168,34 +225,80 @@ impl GrammyApp {
         loop {
             match self.api_receiver.try_recv() {
                 Ok(response) => {
-                    let (request_id, is_success) = match &response {
-                        ApiResponse::Success { request_id, .. } => (*request_id, true),
-                        ApiResponse::Error { request_id, .. } => (*request_id, false),
-                    };
-
-                    // Check if this response is for the current request
-                    if self.current_request_id != Some(request_id) {
-                        eprintln!("[DEBUG] Discarding stale response #{} (current={})", 
-                                  request_id, 
-                                  self.current_request_id.map(|id| id.to_string()).unwrap_or("none".into()));
-                        continue;
-                    }
-
-                    eprintln!("[DEBUG] Processing response #{}, success={}", request_id, is_success);
-                    self.is_checking = false;
-                    self.current_request_id = None;
-
                     match response {
-                        ApiResponse::Success { suggestions, .. } => {
+                        ApiResponse::GrammarSuccess { suggestions, request_id } => {
+                            if self.current_check_request_id != Some(request_id) {
+                                eprintln!("[DEBUG] Discarding stale grammar response #{} (current={})",
+                                    request_id,
+                                    self.current_check_request_id.map(|id| id.to_string()).unwrap_or("none".into())
+                                );
+                                continue;
+                            }
+
+                            eprintln!("[DEBUG] Processing grammar success response #{}", request_id);
+                            self.is_checking = false;
+                            self.current_check_request_id = None;
+
                             self.suggestions = suggestions;
                             if self.suggestions.is_empty() {
                                 self.status = "All good!".to_string();
                             } else {
                                 self.status = format!("{} suggestion(s)", self.suggestions.len());
                             }
+
+                            if self.pending_recheck {
+                                self.pending_recheck = false;
+                                self.last_edit_time = Some(Instant::now() - Duration::from_millis(DEBOUNCE_MS));
+                            }
                         }
-                        ApiResponse::Error { message, .. } => {
+                        ApiResponse::GrammarError { message, request_id } => {
+                            if self.current_check_request_id != Some(request_id) {
+                                eprintln!("[DEBUG] Discarding stale grammar error #{} (current={})",
+                                    request_id,
+                                    self.current_check_request_id.map(|id| id.to_string()).unwrap_or("none".into())
+                                );
+                                continue;
+                            }
+
+                            eprintln!("[DEBUG] Processing grammar error response #{}", request_id);
+                            self.is_checking = false;
+                            self.current_check_request_id = None;
                             self.status = message;
+
+                            if self.pending_recheck {
+                                self.pending_recheck = false;
+                                self.last_edit_time = Some(Instant::now() - Duration::from_millis(DEBOUNCE_MS));
+                            }
+                        }
+                        ApiResponse::TestSuccess { request_id } => {
+                            if self.current_test_request_id != Some(request_id) {
+                                eprintln!("[DEBUG] Discarding stale test response #{} (current={})",
+                                    request_id,
+                                    self.current_test_request_id.map(|id| id.to_string()).unwrap_or("none".into())
+                                );
+                                continue;
+                            }
+
+                            eprintln!("[DEBUG] Processing test success response #{}", request_id);
+                            self.is_testing = false;
+                            self.current_test_request_id = None;
+                            self.test_status = "Connection OK".to_string();
+                            self.test_status_color = COL_SUCCESS;
+                        }
+                        ApiResponse::TestError { message, request_id } => {
+                            if self.current_test_request_id != Some(request_id) {
+                                eprintln!("[DEBUG] Discarding stale test error #{} (current={})",
+                                    request_id,
+                                    self.current_test_request_id.map(|id| id.to_string()).unwrap_or("none".into())
+                                );
+                                continue;
+                            }
+
+                            eprintln!("[DEBUG] Processing test error response #{}", request_id);
+                            self.is_testing = false;
+                            self.current_test_request_id = None;
+                            self.test_status = message;
+                            self.test_status_color = COL_DANGER;
                         }
                     }
                 }
@@ -206,6 +309,38 @@ impl GrammyApp {
                     break;
                 }
             }
+        }
+    }
+
+    fn start_test_connection(&mut self) {
+        if self.is_testing {
+            return;
+        }
+        let request_id = api::next_request_id();
+        self.is_testing = true;
+        self.current_test_request_id = Some(request_id);
+        self.test_status = "Testing...".to_string();
+        self.test_status_color = COL_MUTED;
+
+        let api_key = match self.temp_provider {
+            ApiProvider::OpenAI => self.temp_openai_api_key.trim().to_string(),
+            ApiProvider::OpenRouter => self.temp_openrouter_api_key.trim().to_string(),
+        };
+
+        let request = ApiRequest {
+            job: ApiJob::TestConnection {
+                api_key,
+                provider: self.temp_provider.clone(),
+            },
+            request_id,
+        };
+
+        if let Err(e) = self.api_sender.send(request) {
+            eprintln!("[DEBUG] Failed to send test request: {}", e);
+            self.is_testing = false;
+            self.current_test_request_id = None;
+            self.test_status = "Internal error: failed to send test".to_string();
+            self.test_status_color = COL_DANGER;
         }
     }
 
@@ -257,7 +392,9 @@ impl GrammyApp {
     }
 
     fn save_settings(&mut self) {
-        self.config.api_key = self.temp_api_key.trim().to_string();
+        // Persist both keys regardless of current provider
+        self.config.openai_api_key = self.temp_openai_api_key.trim().to_string();
+        self.config.openrouter_api_key = self.temp_openrouter_api_key.trim().to_string();
         self.config.provider = self.temp_provider.clone();
         self.config.model = if self.temp_model.trim().is_empty() {
             self.config.provider.default_model().to_string()
@@ -337,6 +474,8 @@ impl eframe::App for GrammyApp {
                             if self.temp_model.is_empty() || self.temp_model.starts_with("openai/") {
                                 self.temp_model = ApiProvider::OpenAI.default_model().to_string();
                             }
+                            self.test_status.clear();
+                            self.show_api_key = false;
                         }
                         ui.add_space(8.0);
 
@@ -365,6 +504,8 @@ impl eframe::App for GrammyApp {
                             if self.temp_model.is_empty() || !self.temp_model.contains('/') {
                                 self.temp_model = ApiProvider::OpenRouter.default_model().to_string();
                             }
+                            self.test_status.clear();
+                            self.show_api_key = false;
                         }
                     });
                     ui.add_space(4.0);
@@ -374,13 +515,50 @@ impl eframe::App for GrammyApp {
                     
                     ui.label(egui::RichText::new("API Key").color(COL_TEXT).size(13.0));
                     ui.add_space(4.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.temp_api_key)
-                            .password(true)
-                            .hint_text(if self.temp_provider == ApiProvider::OpenAI { "sk-..." } else { "sk-or-..." })
-                            .text_color(COL_TEXT)
-                            .desired_width(f32::INFINITY),
-                    );
+                    egui::Frame::none()
+                        .fill(COL_EDITOR_BG)
+                        .rounding(6.0)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                        ))
+                        .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let key_ref: &mut String = if self.temp_provider == ApiProvider::OpenAI {
+                                    &mut self.temp_openai_api_key
+                                } else {
+                                    &mut self.temp_openrouter_api_key
+                                };
+
+                                let eye = if self.show_api_key { "🙈" } else { "👁" };
+                                if ui
+                                    .add(
+                                        egui::Button::new(egui::RichText::new(eye).size(16.0).color(COL_TEXT))
+                                            .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.show_api_key = !self.show_api_key;
+                                }
+
+                                ui.add(
+                                    egui::TextEdit::singleline(key_ref)
+                                        .password(!self.show_api_key)
+                                        .hint_text(
+                                            egui::RichText::new(if self.temp_provider == ApiProvider::OpenAI {
+                                                "sk-..."
+                                            } else {
+                                                "sk-or-..."
+                                            })
+                                            .color(COL_MUTED),
+                                        )
+                                        .text_color(COL_TEXT)
+                                        .desired_width(f32::INFINITY)
+                                        .frame(false),
+                                );
+                            });
+                        });
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new("Your API key is stored locally and only sent to the selected provider.").size(11.0).color(COL_MUTED));
 
@@ -388,12 +566,26 @@ impl eframe::App for GrammyApp {
 
                     ui.label(egui::RichText::new("Model").color(COL_TEXT).size(13.0));
                     ui.add_space(4.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.temp_model)
-                            .hint_text(self.temp_provider.default_model())
-                            .text_color(COL_TEXT)
-                            .desired_width(f32::INFINITY),
-                    );
+                    egui::Frame::none()
+                        .fill(COL_EDITOR_BG)
+                        .rounding(6.0)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                        ))
+                        .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.temp_model)
+                                    .hint_text(
+                                        egui::RichText::new(self.temp_provider.default_model())
+                                            .color(COL_MUTED),
+                                    )
+                                    .text_color(COL_TEXT)
+                                    .desired_width(f32::INFINITY)
+                                    .frame(false),
+                            );
+                        });
                     ui.add_space(4.0);
                     let model_hint = if self.temp_provider == ApiProvider::OpenAI {
                         "e.g., gpt-4o-mini, gpt-4o, gpt-4-turbo"
@@ -405,12 +597,44 @@ impl eframe::App for GrammyApp {
                     ui.add_space(16.0);
 
                     ui.horizontal(|ui| {
+                        let btn = egui::Button::new(
+                            egui::RichText::new(if self.is_testing { "Testing..." } else { "Test connection" })
+                                .color(if self.is_testing { COL_MUTED } else { COL_TEXT }),
+                        )
+                        .fill(COL_EDITOR_BG)
+                        .rounding(6.0)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                        ));
+
+                        if ui.add_enabled(!self.is_testing, btn).clicked() {
+                            self.start_test_connection();
+                        }
+
+                        if !self.test_status.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(&self.test_status).color(self.test_status_color).size(12.0));
+                        }
+                    });
+
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(egui::Button::new(egui::RichText::new("Save").color(COL_BG)).fill(COL_ACCENT).rounding(6.0)).clicked() {
                                 self.save_settings();
                             }
                             ui.add_space(8.0);
-                            if ui.add(egui::Button::new(egui::RichText::new("Cancel").color(COL_TEXT)).rounding(6.0)).clicked() {
+                            if ui.add(
+                                egui::Button::new(egui::RichText::new("Cancel").color(COL_TEXT))
+                                    .fill(COL_EDITOR_BG)
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 35),
+                                    ))
+                                    .rounding(6.0),
+                            ).clicked() {
                                 self.show_settings = false;
                             }
                         });
@@ -429,9 +653,13 @@ impl eframe::App for GrammyApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(16.0);
                         if ui.add(egui::Button::new(egui::RichText::new("⚙").size(18.0).color(COL_TEXT)).frame(false)).clicked() {
-                            self.temp_api_key = self.config.api_key.clone();
+                            self.temp_openai_api_key = self.config.openai_api_key.clone();
+                            self.temp_openrouter_api_key = self.config.openrouter_api_key.clone();
                             self.temp_model = self.config.model.clone();
                             self.temp_provider = self.config.provider.clone();
+                            self.show_api_key = false;
+                            self.test_status.clear();
+                            self.test_status_color = COL_MUTED;
                             self.show_settings = true;
                         }
                     });

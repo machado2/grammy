@@ -32,7 +32,12 @@ impl ApiProvider {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    pub api_key: String,
+    #[serde(default)]
+    pub openai_api_key: String,
+    #[serde(default)]
+    pub openrouter_api_key: String,
+    #[serde(default, rename = "api_key")]
+    pub legacy_api_key: Option<String>,
     pub model: String,
     #[serde(default)]
     pub provider: ApiProvider,
@@ -41,7 +46,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            openai_api_key: String::new(),
+            openrouter_api_key: String::new(),
+            legacy_api_key: None,
             model: "gpt-4o-mini".to_string(),
             provider: ApiProvider::OpenAI,
         }
@@ -50,10 +57,28 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Self {
-        confy::load("grammy", "config").unwrap_or_default()
+        let mut cfg: Self = confy::load("grammy", "config").unwrap_or_default();
+
+        // Backward-compat migration: older versions stored a single api_key.
+        if cfg.openai_api_key.trim().is_empty() {
+            if let Some(k) = cfg.legacy_api_key.clone() {
+                if !k.trim().is_empty() {
+                    cfg.openai_api_key = k;
+                }
+            }
+        }
+
+        cfg
     }
 
     pub fn save(&self) {
         let _ = confy::store("grammy", "config", self.clone());
+    }
+
+    pub fn api_key_for_provider(&self, provider: &ApiProvider) -> String {
+        match provider {
+            ApiProvider::OpenAI => self.openai_api_key.clone(),
+            ApiProvider::OpenRouter => self.openrouter_api_key.clone(),
+        }
     }
 }

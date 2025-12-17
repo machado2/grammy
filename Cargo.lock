@@ -1033,6 +1033,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embed-manifest"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94cdc65b1cf9e871453ce2f86f5aaec24ff2eaa36a1fa3e02e441dddc3613b99"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1541,6 +1547,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "embed-manifest",
  "reqwest",
  "serde",
  "serde_json",

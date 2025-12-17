@@ -130,6 +130,70 @@ pub fn next_request_id() -> u64 {
     REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
+pub async fn test_connection(
+    api_key: String,
+    provider: ApiProvider,
+    request_id: u64,
+) -> Result<u64, String> {
+    let start = Instant::now();
+    eprintln!("[DEBUG #{request_id}] Starting connection test, provider={}", provider.name());
+
+    if api_key.is_empty() {
+        eprintln!("[DEBUG #{request_id}] Error: API key not set");
+        return Err("API key not set. Click ⚙ to configure.".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    // NOTE: /models on OpenRouter may return 200 without authentication, which can
+    // produce false positives. Use an endpoint that requires auth.
+    let url = match provider {
+        ApiProvider::OpenAI => "https://api.openai.com/v1/models",
+        ApiProvider::OpenRouter => "https://openrouter.ai/api/v1/key",
+    };
+
+    eprintln!("[DEBUG #{request_id}] Sending test request to {}", url);
+
+    let mut request = client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", api_key));
+
+    if provider == ApiProvider::OpenRouter {
+        request = request
+            .header("HTTP-Referer", "https://github.com/grammy-app")
+            .header("X-Title", "Grammy");
+    }
+
+    let response = request.send().await.map_err(|e| {
+        eprintln!("[DEBUG #{request_id}] Network error after {:?}: {}", start.elapsed(), e);
+        format!("Network error: {}", e)
+    })?;
+
+    let status = response.status();
+    eprintln!("[DEBUG #{request_id}] Test response status: {} after {:?}", status, start.elapsed());
+
+    if !status.is_success() {
+        let msg = match response.json::<serde_json::Value>().await {
+            Ok(v) => v
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+                .unwrap_or_else(|| v.to_string()),
+            Err(_) => "Unauthorized".to_string(),
+        };
+        eprintln!("[DEBUG #{request_id}] Test API error: {} - {}", status, msg);
+        return Err(format!("{} error ({}): {}", provider.name(), status, msg));
+    }
+
+    eprintln!("[DEBUG #{request_id}] Connection test succeeded in {:?}", start.elapsed());
+    Ok(request_id)
+}
+
 fn convert_matches_to_suggestions(text: &str, matches: Vec<LlmMatch>) -> Vec<Suggestion> {
     let mut suggestions = Vec::new();
 
