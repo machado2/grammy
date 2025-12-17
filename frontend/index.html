@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grammy</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">Grammy</div>
+        <div class="actions">
+          <button id="checkBtn" class="btn primary">Check</button>
+        </div>
+      </header>
+
+      <main class="main">
+        <section class="editor">
+          <label class="label" for="textInput">Your text</label>
+          <textarea id="textInput" spellcheck="false" placeholder="Paste or type here..."></textarea>
+          <div class="hint">Suggestions are conservative and you choose what to apply.</div>
+        </section>
+
+        <aside class="sidebar">
+          <div class="sidebarHeader">
+            <div class="sidebarTitle">Suggestions</div>
+            <div id="status" class="status"></div>
+          </div>
+          <div id="suggestions" class="suggestions"></div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

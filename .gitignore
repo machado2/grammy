@@ -1,0 +1,22 @@
+/backend/target/
+**/*.rs.bk
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+
+# Env / secrets
+.env
+.env.*
+
+# Node (if added later)
+node_modules/
+/dist/
