@@ -1,24 +1,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
 mod api;
 mod config;
 mod suggestion;
 
-use app::GrammyApp;
+mod app;
 
-fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([800.0, 600.0])
-            .with_title("Grammy"),
-        ..Default::default()
-    };
+use iced::window;
+use iced::Size;
 
-    eframe::run_native(
-        "Grammy",
-        options,
-        Box::new(|cc| Ok(Box::new(GrammyApp::new(cc)))),
-    )
+fn main() -> iced::Result {
+    iced::application(app::new, app::update, app::view)
+        .title("Grammy")
+        .theme(app::theme)
+        .subscription(app::subscription)
+        .window(window::Settings {
+            size: Size::new(1200.0, 800.0),
+            min_size: Some(Size::new(800.0, 600.0)),
+            ..Default::default()
+        })
+        .settings(app::settings())
+        .run()
 }
