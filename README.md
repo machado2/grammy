@@ -2,6 +2,8 @@
 
 A small Grammarly-like web app (conservative suggestions + click-to-apply) that runs entirely in the browser.
 
+Live: https://grammy.fbmac.net
+
 ## Run
 
 Simply serve this folder with any static file server:
