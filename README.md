@@ -1,47 +1,57 @@
-# Grammy
+# Grammy Desktop
 
-A small Grammarly-like web app (conservative suggestions + click-to-apply) that runs entirely in the browser.
+A native Rust desktop application for grammar checking powered by OpenAI, built with egui.
 
-Live: https://grammy.fbmac.net
+## Features
 
-## Run
+- **Native Performance**: Built with Rust and egui for fast, responsive UI
+- **Real-time Grammar Checking**: Suggestions appear as you type (with debouncing)
+- **Inline Highlighting**: Problematic text is highlighted in red with underlines
+- **Suggestions Panel**: View all suggestions in a sidebar with one-click accept
+- **Settings Persistence**: API key and model are stored locally via confy
+- **Dark Theme**: Modern dark UI matching the original web app design
 
-Simply serve this folder with any static file server:
+## Building
 
 ```bash
-# Using Python
-python -m http.server 8000
-
-# Using Node.js (npx)
-npx serve .
-
-# Or just open index.html directly in your browser
+cd grammy-desktop
+cargo build --release
 ```
 
-Then open http://localhost:8000 (or the appropriate URL for your server).
+The executable will be at `target/release/grammy.exe` (Windows) or `target/release/grammy` (Linux/macOS).
 
-## Setup
+## Running
 
-1. Click the ⚙️ settings button in the header
-2. Enter your OpenAI API key
-3. Optionally change the model (default: `gpt-5-mini`)
+```bash
+cargo run --release
+```
+
+Or run the built executable directly.
+
+## Configuration
+
+1. Click the ⚙ button in the top-right corner
+2. Enter your OpenAI API Key
+3. Optionally change the model (default: `gpt-4o-mini`)
 4. Click Save
 
-Your API key is stored in your browser's localStorage and is only sent directly to OpenAI's API.
+Your settings are stored locally in your system's config directory.
 
-## How it works
+## Usage
 
-- Type or paste text in the editor
-- The app automatically checks your text after you stop typing
-- Suggestions appear as underlined text and in the sidebar
-- Click "Accept" to apply a suggestion
+1. Type or paste text into the editor
+2. Wait ~600ms after typing for automatic grammar check
+3. Suggestions appear highlighted in the text and listed in the sidebar
+4. Click "Accept" on any suggestion to apply the correction
 
-## Privacy
+## Tech Stack
 
-- **Frontend-only**: No backend server required
-- **API key stored locally**: Your key never leaves your browser except when calling OpenAI
-- **Direct API calls**: Requests go directly from your browser to `api.openai.com`
+- **eframe/egui**: Native GUI framework
+- **reqwest**: HTTP client for OpenAI API
+- **tokio**: Async runtime for non-blocking API calls
+- **serde**: JSON serialization
+- **confy**: Configuration management
 
-## Notes
+## License
 
-This intentionally does not "rewrite" your text. It only proposes small mechanical fixes you can accept or ignore.
+MIT
