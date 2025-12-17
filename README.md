@@ -1,73 +1,45 @@
 # Grammy
 
-A small Grammarly-like web app (conservative suggestions + click-to-apply) with a Rust backend.
+A small Grammarly-like web app (conservative suggestions + click-to-apply) that runs entirely in the browser.
 
 ## Run
 
-1. Install Rust (stable) if you don’t have it.
-2. Start the server:
+Simply serve the `frontend/` folder with any static file server:
 
 ```bash
-cargo run
+# Using Python
+python -m http.server 8000 -d frontend
+
+# Using Node.js (npx)
+npx serve frontend
+
+# Or just open frontend/index.html directly in your browser
 ```
 
-Run it from `backend/`.
+Then open http://localhost:8000 (or the appropriate URL for your server).
 
-3. Open:
+## Setup
 
-http://127.0.0.1:3000
+1. Click the ⚙️ settings button in the header
+2. Enter your OpenAI API key
+3. Optionally change the model (default: `gpt-4o-mini`)
+4. Click Save
 
-## Tests
+Your API key is stored in your browser's localStorage and is only sent directly to OpenAI's API.
 
-Run from `backend/`:
+## How it works
 
-```bash
-cargo test
-```
+- Type or paste text in the editor
+- The app automatically checks your text after you stop typing
+- Suggestions appear as underlined text and in the sidebar
+- Click "Accept" to apply a suggestion
 
-### Live API smoke test (optional)
+## Privacy
 
-There is an opt-in live test that calls the real API (costs tokens). It is ignored by default.
-
-Run it from `backend/`:
-
-```powershell
-$env:GRAMMY_RUN_LIVE_TESTS = "1"
-# Uses OPENAI_API_KEY by default (or GRAMMY_LLM_API_KEY override)
-cargo test -- --ignored
-```
-
-Note (Windows): if the server is currently running, `cargo run` / `cargo test` may fail with an "Access denied" error when it tries to overwrite `target\\debug\\grammy_backend.exe`. Stop the running server first.
-
-## LLM suggestions
-
-This app is LLM-powered: it asks a model for conservative, localized edits (good for catching "this sounds weird" phrasing).
-
-Environment variables:
-
-- **`OPENAI_API_KEY`**
-  - Required.
-  - Uses an OpenAI-compatible `chat/completions` endpoint.
-- **`GRAMMY_LLM_API_KEY`** (optional)
-  - Overrides `OPENAI_API_KEY` if set.
-- **`GRAMMY_LLM_API_BASE`** (optional)
-  - Default: `https://api.openai.com/v1`
-- **`GRAMMY_LLM_MODEL`** (optional)
-  - Default: `gpt-5-mini-2025-08-07`
-
-Example (PowerShell):
-
-```powershell
-$env:OPENAI_API_KEY = "YOUR_KEY_HERE"
-$env:GRAMMY_LLM_MODEL = "gpt-5-mini-2025-08-07"
-cargo run
-```
-
-## What it does
-
-- `POST /api/check` returns a list of LLM-generated suggestions.
-- `POST /api/apply` applies one suggestion (with conflict detection) and returns updated text + refreshed suggestions.
+- **Frontend-only**: No backend server required
+- **API key stored locally**: Your key never leaves your browser except when calling OpenAI
+- **Direct API calls**: Requests go directly from your browser to `api.openai.com`
 
 ## Notes
 
-This intentionally does not “rewrite” your text. It only proposes small mechanical fixes you can accept or ignore.
+This intentionally does not "rewrite" your text. It only proposes small mechanical fixes you can accept or ignore.

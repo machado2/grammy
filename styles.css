@@ -298,6 +298,145 @@ body {
   padding: 20px 10px;
 }
 
+/* Settings Button */
+.settingsBtn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.settingsBtn:hover {
+  background: rgba(110, 168, 254, 0.1);
+  border-color: rgba(110, 168, 254, 0.4);
+}
+
+/* Modal */
+.modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 2000;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal.open {
+  display: flex;
+}
+
+.modalContent {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  width: 100%;
+  max-width: 420px;
+  margin: 16px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  animation: modalIn 0.2s ease-out;
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modalTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.modalClose {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.modalClose:hover {
+  color: var(--text);
+}
+
+.modalBody {
+  padding: 18px;
+}
+
+.modalFooter {
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.formGroup {
+  margin-bottom: 16px;
+}
+
+.formGroup:last-child {
+  margin-bottom: 0;
+}
+
+.formLabel {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.formInput {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.formInput:focus {
+  border-color: rgba(110, 168, 254, 0.6);
+  box-shadow: 0 0 0 3px rgba(110, 168, 254, 0.14);
+}
+
+.formInput::placeholder {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.formHint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 @media (max-width: 800px) {
   .main {
     grid-template-columns: 1fr;

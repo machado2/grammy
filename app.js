@@ -1,15 +1,65 @@
 const textInput = document.getElementById('textInput');
 const statusEl = document.getElementById('status');
 const suggestionsEl = document.getElementById('suggestions');
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsModal = document.getElementById('settingsModal');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const modelInput = document.getElementById('modelInput');
+const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 
 let lastMatches = [];
 let lastText = '';
 let checkTimeout = null;
-let isChecking = false;
+let currentAbortController = null;
 let activePopup = null;
 let popupHideTimeout = null;
 
 const DEBOUNCE_MS = 600;
+const STORAGE_KEY_API = 'grammy_api_key';
+const STORAGE_KEY_MODEL = 'grammy_model';
+const DEFAULT_MODEL = 'gpt-4o-mini';
+
+// Settings management
+function getApiKey() {
+  return localStorage.getItem(STORAGE_KEY_API) || '';
+}
+
+function setApiKey(key) {
+  localStorage.setItem(STORAGE_KEY_API, key);
+}
+
+function getModel() {
+  return localStorage.getItem(STORAGE_KEY_MODEL) || DEFAULT_MODEL;
+}
+
+function setModel(model) {
+  localStorage.setItem(STORAGE_KEY_MODEL, model || DEFAULT_MODEL);
+}
+
+function openSettings() {
+  apiKeyInput.value = getApiKey();
+  modelInput.value = getModel();
+  settingsModal.classList.add('open');
+}
+
+function closeSettings() {
+  settingsModal.classList.remove('open');
+}
+
+function saveSettings() {
+  setApiKey(apiKeyInput.value.trim());
+  setModel(modelInput.value.trim());
+  closeSettings();
+  setStatus('Settings saved');
+}
+
+settingsBtn.addEventListener('click', openSettings);
+closeSettingsBtn.addEventListener('click', closeSettings);
+saveSettingsBtn.addEventListener('click', saveSettings);
+settingsModal.addEventListener('click', (e) => {
+  if (e.target === settingsModal) closeSettings();
+});
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -241,19 +291,131 @@ function showPopup(suggestionEl, match) {
   activePopup = popup;
 }
 
-async function apiPost(path, body) {
-  const res = await fetch(path, {
+// OpenAI API integration
+const SYSTEM_PROMPT = `You are a careful English writing assistant.
+Your job: suggest minimal edits for grammar, clarity, and phrases that sound non-native/awkward.
+Rules:
+- Do NOT rewrite the whole text.
+- Only propose small localized edits (replace a short span with a short span).
+- Preserve the author's voice and meaning.
+- Prefer fewer suggestions over many.
+
+Return ONLY valid JSON with this exact schema:
+{
+  "matches": [
+    {
+      "message": "...",
+      "start": 0,
+      "end": 0,
+      "replacement": "..."
+    }
+  ]
+}
+
+Where start/end are CHARACTER indices (Unicode scalar value count) into the ORIGINAL input text. end is exclusive.
+If there is nothing to change, return {"matches": []}.`;
+
+function generateId() {
+  return crypto.randomUUID();
+}
+
+function convertLlmMatchesToSuggestions(text, matches) {
+  const chars = [...text];
+  const charLen = chars.length;
+  
+  // Build byte boundaries from char indices
+  const boundaries = [];
+  let bytePos = 0;
+  for (const char of chars) {
+    boundaries.push(bytePos);
+    bytePos += char.length;
+  }
+  boundaries.push(bytePos);
+
+  const out = [];
+  for (const m of matches) {
+    if (m.start > m.end || m.end > charLen) continue;
+    
+    const startB = boundaries[m.start];
+    const endB = boundaries[m.end];
+    
+    if (startB === undefined || endB === undefined) continue;
+    if (startB > endB || endB > text.length) continue;
+    
+    const original = text.slice(startB, endB);
+    if (original === m.replacement) continue;
+    
+    out.push({
+      id: generateId(),
+      message: m.message,
+      offset: startB,
+      length: endB - startB,
+      original: original,
+      replacement: m.replacement,
+      rule: 'llm'
+    });
+  }
+
+  out.sort((a, b) => a.offset - b.offset);
+
+  // Filter overlapping
+  const filtered = [];
+  let lastEnd = 0;
+  for (const s of out) {
+    const end = s.offset + s.length;
+    if (s.offset < lastEnd) continue;
+    lastEnd = end;
+    filtered.push(s);
+  }
+
+  return filtered;
+}
+
+async function callOpenAI(text, signal) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error('API key not set. Click ⚙️ to configure.');
+  }
+
+  const model = getModel();
+  const url = 'https://api.openai.com/v1/chat/completions';
+
+  const body = {
+    model: model,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: `Text:\n${text}` }
+    ],
+    response_format: { type: 'json_object' }
+  };
+
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
     body: JSON.stringify(body),
+    signal
   });
 
-  const data = await res.json().catch(() => null);
   if (!res.ok) {
-    const msg = data && data.error ? data.error : `Request failed (${res.status})`;
+    const data = await res.json().catch(() => null);
+    const msg = data?.error?.message || `OpenAI API error (${res.status})`;
     throw new Error(msg);
   }
-  return data;
+
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content || '{"matches":[]}';
+  
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error('Invalid JSON response from LLM');
+  }
+
+  return convertLlmMatchesToSuggestions(text, parsed.matches || []);
 }
 
 async function checkText() {
@@ -263,62 +425,101 @@ async function checkText() {
     lastMatches = [];
     lastText = text;
     setStatus('Ready');
+    renderSidebar([]);
     return;
   }
 
-  isChecking = true;
+  // Abort any in-flight request
+  if (currentAbortController) {
+    currentAbortController.abort();
+  }
+  currentAbortController = new AbortController();
+  const signal = currentAbortController.signal;
+  const textAtStart = text;
+
   setStatus('Checking...');
 
   try {
-    const data = await apiPost('/api/check', { text });
-    lastMatches = data.matches || [];
+    const matches = await callOpenAI(text, signal);
+    
+    // Check if text changed while we were waiting
+    const currentText = getTextContent();
+    if (currentText !== textAtStart) {
+      // Text changed, discard results - a new check will be scheduled
+      return;
+    }
+
+    lastMatches = matches;
     lastText = text;
     renderWithHighlights(text, lastMatches);
     renderSidebar(lastMatches);
     setStatus(lastMatches.length ? `${lastMatches.length} suggestion(s)` : 'All good!');
   } catch (err) {
+    if (err.name === 'AbortError') {
+      // Request was aborted, ignore
+      return;
+    }
     setStatus(err.message);
   } finally {
-    isChecking = false;
+    currentAbortController = null;
   }
 }
 
 function scheduleCheck() {
   if (checkTimeout) clearTimeout(checkTimeout);
+  
+  // Abort ongoing request when user types
+  if (currentAbortController) {
+    currentAbortController.abort();
+    currentAbortController = null;
+  }
+  
   checkTimeout = setTimeout(() => {
     checkText();
   }, DEBOUNCE_MS);
 }
 
-async function applySuggestion(suggestion) {
+function applySuggestion(suggestion) {
   hidePopup();
   const text = getTextContent();
 
-  try {
-    const data = await apiPost('/api/apply', { text, suggestion });
-    const newText = data.text;
+  const start = suggestion.offset;
+  const end = suggestion.offset + suggestion.length;
 
-    // Adjust remaining suggestions' offsets
-    const delta = suggestion.replacement.length - suggestion.length;
-    const updatedMatches = lastMatches
-      .filter(m => m.id !== suggestion.id)
-      .map(m => {
-        if (m.offset > suggestion.offset) {
-          return { ...m, offset: m.offset + delta };
-        }
-        return m;
-      });
-
-    lastMatches = updatedMatches;
-    lastText = newText;
-    renderWithHighlights(newText, lastMatches);
-    renderSidebar(lastMatches);
-    setStatus(lastMatches.length ? `${lastMatches.length} suggestion(s)` : 'All good!');
-  } catch (err) {
-    setStatus(err.message);
-    // Text changed, trigger re-check
+  // Validate range
+  if (start > text.length || end > text.length || start > end) {
+    setStatus('Invalid suggestion range');
     scheduleCheck();
+    return;
   }
+
+  // Check if text still matches
+  const slice = text.slice(start, end);
+  if (slice !== suggestion.original) {
+    setStatus('Text changed; re-checking...');
+    scheduleCheck();
+    return;
+  }
+
+  // Apply replacement
+  const newText = text.slice(0, start) + suggestion.replacement + text.slice(end);
+
+  // Adjust remaining suggestions' offsets
+  const delta = suggestion.replacement.length - suggestion.length;
+  const updatedMatches = lastMatches
+    .filter(m => m.id !== suggestion.id)
+    .map(m => {
+      if (m.offset > suggestion.offset) {
+        return { ...m, offset: m.offset + delta };
+      }
+      return m;
+    });
+
+  lastMatches = updatedMatches;
+  lastText = newText;
+  renderWithHighlights(newText, lastMatches);
+  renderSidebar(lastMatches);
+  setStatus(lastMatches.length ? `${lastMatches.length} suggestion(s)` : 'All good!');
 }
 
 // Event listeners
