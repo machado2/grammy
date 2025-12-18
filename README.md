@@ -1,56 +1,56 @@
-# Grammy Desktop
+# Grammy
 
-A native Rust desktop application for grammar checking powered by OpenAI, built with egui.
+A native Rust desktop application for grammar checking powered by OpenAI-compatible chat completion APIs.
 
 ## Features
 
-- **Native Performance**: Built with Rust and egui for fast, responsive UI
-- **Real-time Grammar Checking**: Suggestions appear as you type (with debouncing)
-- **Inline Highlighting**: Problematic text is highlighted in red with underlines
-- **Suggestions Panel**: View all suggestions in a sidebar with one-click accept
-- **Settings Persistence**: API key and model are stored locally via confy
-- **Dark Theme**: Modern dark UI matching the original web app design
+- **Native UI**: Built with `iced`
+- **Real-time checks**: Suggestions appear as you type (debounced)
+- **Inline highlighting**: Suggested spans are underlined in the editor
+- **Suggestions sidebar**: Accept/Dismiss individual suggestions
+- **Settings**: Configure provider, API key, and model via the in-app ⚙ dialog
+- **Draft autosave**: Text is periodically saved and restored on next launch
 
-## Building
+## Download
 
-```bash
-cd grammy-desktop
-cargo build --release
-```
+Prebuilt binaries are published on GitHub Releases.
 
-The executable will be at `target/release/grammy.exe` (Windows) or `target/release/grammy` (Linux/macOS).
-
-## Running
+## Build
 
 ```bash
-cargo run --release
+cargo build --release --locked
 ```
 
-Or run the built executable directly.
+Artifacts:
+
+- **Windows**: `target/release/grammy.exe`
+- **Linux/macOS**: `target/release/grammy`
+
+### Linux dependencies
+
+Depending on your distro and system setup, you may need system packages for windowing/audio.
+
+## Run
+
+```bash
+cargo run --release --locked
+```
 
 ## Configuration
 
-1. Click the ⚙ button in the top-right corner
-2. Enter your OpenAI API Key
-3. Optionally change the model (default: `gpt-4o-mini`)
-4. Click Save
+1. Click the ⚙ button
+2. Select an API provider:
+   - **OpenAI**
+   - **OpenRouter**
+3. Paste the API key for the selected provider
+4. Optionally change the model
+5. Click Save
 
-Your settings are stored locally in your system's config directory.
+Settings and draft text are stored locally via `confy`.
 
-## Usage
+## Releases (GitHub Actions)
 
-1. Type or paste text into the editor
-2. Wait ~600ms after typing for automatic grammar check
-3. Suggestions appear highlighted in the text and listed in the sidebar
-4. Click "Accept" on any suggestion to apply the correction
-
-## Tech Stack
-
-- **eframe/egui**: Native GUI framework
-- **reqwest**: HTTP client for OpenAI API
-- **tokio**: Async runtime for non-blocking API calls
-- **serde**: JSON serialization
-- **confy**: Configuration management
+Pushing a tag like `v0.1.1` will build and attach binaries for Windows, Linux, and macOS to a GitHub Release.
 
 ## License
 
