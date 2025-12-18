@@ -17,6 +17,7 @@ fn main() -> iced::Result {
         .window(window::Settings {
             size: Size::new(1200.0, 800.0),
             min_size: Some(Size::new(800.0, 600.0)),
+            exit_on_close_request: false,
             ..Default::default()
         })
         .settings(app::settings())

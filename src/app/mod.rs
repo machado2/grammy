@@ -1,4 +1,6 @@
 mod api_worker;
+mod draft;
+mod highlight;
 mod state;
 mod style;
 mod ui;

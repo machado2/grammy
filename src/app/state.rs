@@ -2,24 +2,33 @@ use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use iced::widget::text_editor;
-use iced::{Subscription, Task, Theme};
+use iced::{window, Subscription, Task, Theme};
 
 use crate::config::{ApiProvider, Config};
 use crate::suggestion::Suggestion;
 
 use super::api_worker::{spawn_api_worker, ApiJob, ApiRequest, ApiResponse};
+use super::draft;
 use super::style;
 use super::ui;
 
 const DEBOUNCE_MS: u64 = 800;
 const TICK_MS: u64 = 50;
+const AUTOSAVE_SECS: u64 = 30;
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick,
+    AutosaveTick,
+    WindowCloseRequested(window::Id),
 
     EditorAction(text_editor::Action),
     ApplySuggestion(String),
+    DismissSuggestion(String),
+    HoverSuggestion(String),
+    ClearHoverSuggestion,
+
+    ForceCheck,
 
     OpenSettings,
     CloseSettings,
@@ -38,6 +47,10 @@ pub struct State {
     pub(super) editor: text_editor::Content,
     pub(super) last_checked_text: String,
     pub(super) suggestions: Vec<Suggestion>,
+
+    pub(super) draft_dirty: bool,
+
+    pub(super) hovered_suggestion: Option<String>,
 
     pub(super) status: String,
 
@@ -70,13 +83,22 @@ pub fn new() -> (State, Task<Message>) {
     let (response_tx, response_rx) = channel::<ApiResponse>();
     spawn_api_worker(request_rx, response_tx);
 
-    let editor = text_editor::Content::new();
+    let draft = draft::load();
+    let editor = if draft.text.is_empty() {
+        text_editor::Content::new()
+    } else {
+        text_editor::Content::with_text(&draft.text)
+    };
 
     (
         State {
             editor,
             last_checked_text: String::new(),
             suggestions: Vec::new(),
+
+            draft_dirty: false,
+
+            hovered_suggestion: None,
             status: "Ready".to_string(),
             config: config.clone(),
             show_settings: false,
@@ -107,18 +129,85 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::AutosaveTick => {
+            if state.draft_dirty {
+                draft::save_text(state.editor.text());
+                state.draft_dirty = false;
+            }
+            Task::none()
+        }
+
+        Message::WindowCloseRequested(id) => {
+            if state.draft_dirty {
+                draft::save_text(state.editor.text());
+                state.draft_dirty = false;
+            }
+            window::close(id)
+        }
+
         Message::EditorAction(action) => {
+            let old_text = state.editor.text();
             state.editor.perform(action);
-            state.suggestions.clear();
-            state.last_edit_time = Some(Instant::now());
-            if state.is_checking {
-                state.pending_recheck = true;
+            let new_text = state.editor.text();
+
+            // Only clear suggestions if text actually changed
+            if old_text != new_text {
+                state.suggestions.clear();
+                state.hovered_suggestion = None;
+                state.last_edit_time = Some(Instant::now());
+                state.draft_dirty = true;
+                if state.is_checking {
+                    state.pending_recheck = true;
+                }
             }
             Task::none()
         }
 
         Message::ApplySuggestion(id) => {
+            let old_text = state.editor.text();
             apply_suggestion(state, &id);
+            if state.editor.text() != old_text {
+                state.draft_dirty = true;
+            }
+            Task::none()
+        }
+
+        Message::DismissSuggestion(id) => {
+            state.suggestions.retain(|s| s.id != id);
+            if state.hovered_suggestion.as_deref() == Some(id.as_str()) {
+                state.hovered_suggestion = None;
+            }
+
+            if !state.is_checking {
+                if state.suggestions.is_empty() {
+                    state.status = "All good!".to_string();
+                } else {
+                    state.status = format!("{} suggestion(s)", state.suggestions.len());
+                }
+            }
+
+            Task::none()
+        }
+
+        Message::HoverSuggestion(id) => {
+            state.hovered_suggestion = Some(id);
+            Task::none()
+        }
+
+        Message::ClearHoverSuggestion => {
+            state.hovered_suggestion = None;
+            Task::none()
+        }
+
+        Message::ForceCheck => {
+            if state.is_checking {
+                state.pending_recheck = true;
+                state.status = "Rechecking...".to_string();
+                return Task::none();
+            }
+
+            state.last_checked_text.clear();
+            check_text(state);
             Task::none()
         }
 
@@ -226,7 +315,12 @@ pub fn theme(state: &State) -> Theme {
 }
 
 pub fn subscription(_state: &State) -> Subscription<Message> {
-    iced::time::every(Duration::from_millis(TICK_MS)).map(|_| Message::Tick)
+    Subscription::batch([
+        iced::time::every(Duration::from_millis(TICK_MS)).map(|_| Message::Tick),
+        iced::time::every(Duration::from_secs(AUTOSAVE_SECS))
+            .map(|_| Message::AutosaveTick),
+        window::close_requests().map(Message::WindowCloseRequested),
+    ])
 }
 
 pub fn settings() -> iced::Settings {
@@ -254,6 +348,7 @@ fn check_text(state: &mut State) {
 
     if text.trim().is_empty() {
         state.suggestions.clear();
+        state.hovered_suggestion = None;
         state.status = "Ready".to_string();
         state.last_checked_text = text;
         state.is_checking = false;
@@ -275,6 +370,9 @@ fn check_text(state: &mut State) {
     state.is_checking = true;
     state.current_check_request_id = Some(request_id);
     state.status = "Checking...".to_string();
+
+    state.suggestions.clear();
+    state.hovered_suggestion = None;
     state.last_checked_text = text.clone();
 
     let request = ApiRequest {
