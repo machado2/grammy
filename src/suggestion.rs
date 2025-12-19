@@ -7,11 +7,16 @@ pub struct Suggestion {
     pub offset: usize,
     pub length: usize,
     pub original: String,
-    pub replacement: String,
+    pub replacement: Option<String>,
 }
 
 impl Suggestion {
-    pub fn new(message: String, offset: usize, original: String, replacement: String) -> Self {
+    pub fn new(
+        message: String,
+        offset: usize,
+        original: String,
+        replacement: Option<String>,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             message,
@@ -27,7 +32,7 @@ impl Suggestion {
 pub struct LlmMatch {
     pub message: String,
     pub original: String,
-    pub replacement: String,
+    pub replacement: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

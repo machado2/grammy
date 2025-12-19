@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub enum ApiProvider {
-    #[default]
     OpenAI,
+    #[default]
     OpenRouter,
 }
 
@@ -25,7 +25,7 @@ impl ApiProvider {
     pub fn default_model(&self) -> &'static str {
         match self {
             ApiProvider::OpenAI => "gpt-4o-mini",
-            ApiProvider::OpenRouter => "openai/gpt-4o-mini",
+            ApiProvider::OpenRouter => "google/gemini-3-flash-preview",
         }
     }
 }
@@ -41,6 +41,12 @@ pub struct Config {
     pub model: String,
     #[serde(default)]
     pub provider: ApiProvider,
+    #[serde(default = "default_debounce")]
+    pub debounce_ms: u64,
+}
+
+fn default_debounce() -> u64 {
+    3000
 }
 
 impl Default for Config {
@@ -49,8 +55,9 @@ impl Default for Config {
             openai_api_key: String::new(),
             openrouter_api_key: String::new(),
             legacy_api_key: None,
-            model: "gpt-4o-mini".to_string(),
-            provider: ApiProvider::OpenAI,
+            model: "google/gemini-3-flash-preview".to_string(),
+            provider: ApiProvider::OpenRouter,
+            debounce_ms: 3000,
         }
     }
 }

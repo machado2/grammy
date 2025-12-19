@@ -1,7 +1,7 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    button, column, container, mouse_area, row, rule, scrollable, text, text_editor, text_input,
-    Column,
+    button, column, container, mouse_area, row, rule, scrollable, slider, text, text_editor,
+    text_input, Column,
 };
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
@@ -219,40 +219,56 @@ fn suggestion_card<'a>(
             color: Some(COL_DANGER),
         });
 
-    let arrow = text("→").size(14).style(|_t| iced::widget::text::Style {
-        color: Some(COL_MUTED),
-    });
-
-    let replacement = text(&s.replacement)
-        .size(14)
-        .wrapping(Wrapping::WordOrGlyph)
-        .width(Fill)
-        .style(|_t| iced::widget::text::Style {
-            color: Some(COL_SUCCESS),
+    let (diff_row, actions) = if let Some(ref replacement_text) = s.replacement {
+        let arrow = text("→").size(14).style(|_t| iced::widget::text::Style {
+            color: Some(COL_MUTED),
         });
 
-    let accept = button(text("Accept").size(12))
-        .on_press(Message::ApplySuggestion(s.id.clone()))
-        .padding(Padding::from([8.0, 16.0]))
-        .style(btn_success)
-        .width(Fill);
+        let replacement = text(replacement_text)
+            .size(14)
+            .wrapping(Wrapping::WordOrGlyph)
+            .width(Fill)
+            .style(|_t| iced::widget::text::Style {
+                color: Some(COL_SUCCESS),
+            });
 
-    let dismiss = button(text("Dismiss").size(12))
-        .on_press(Message::DismissSuggestion(s.id.clone()))
-        .padding(Padding::from([8.0, 16.0]))
-        .style(btn_ghost)
-        .width(Fill);
+        let accept = button(text("Accept").size(12))
+            .on_press(Message::ApplySuggestion(s.id.clone()))
+            .padding(Padding::from([8.0, 16.0]))
+            .style(btn_success)
+            .width(Fill);
 
-    let actions = row![dismiss, accept].spacing(12);
+        let dismiss = button(text("Dismiss").size(12))
+            .on_press(Message::DismissSuggestion(s.id.clone()))
+            .padding(Padding::from([8.0, 16.0]))
+            .style(btn_ghost)
+            .width(Fill);
 
-    let diff_row = row![
-        container(original).width(Length::FillPortion(1)),
-        container(arrow).center_x(Fill),
-        container(replacement).width(Length::FillPortion(1)),
-    ]
-    .spacing(8)
-    .width(Fill)
-    .align_y(Alignment::Center);
+        let row_content = row![
+            container(original).width(Length::FillPortion(1)),
+            container(arrow).center_x(Fill),
+            container(replacement).width(Length::FillPortion(1)),
+        ]
+        .spacing(8)
+        .width(Fill)
+        .align_y(Alignment::Center);
+
+        let action_row = row![dismiss, accept].spacing(12);
+        (row_content, action_row)
+    } else {
+        // Comment only
+        let dismiss = button(text("Dismiss").size(12))
+            .on_press(Message::DismissSuggestion(s.id.clone()))
+            .padding(Padding::from([8.0, 16.0]))
+            .style(btn_ghost)
+            .width(Fill);
+
+        let row_content = row![container(original).width(Fill)]
+            .width(Fill)
+            .align_y(Alignment::Center);
+
+        (row_content, row![dismiss])
+    };
 
     container(
         column![
@@ -358,6 +374,22 @@ fn settings_content(state: &State) -> Element<'_, Message> {
     .style(btn_secondary)
     .width(Fill);
 
+    let debounce_val = state.temp_debounce_ms;
+    let debounce_text = if debounce_val > 5000.0 {
+        "Never".to_string()
+    } else {
+        format!("{:.1}s", debounce_val / 1000.0)
+    };
+
+    let debounce_slider = row![
+        slider(250.0..=5500.0, debounce_val, Message::TempDebounceChanged)
+            .step(250.0)
+            .width(Fill),
+        text(debounce_text).size(14).width(Length::Fixed(50.0)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
     let test_status: Element<'_, Message> = if state.test_status.is_empty() {
         iced::widget::Space::new().height(0.0).into()
     } else {
@@ -420,6 +452,13 @@ fn settings_content(state: &State) -> Element<'_, Message> {
                 color: Some(COL_TEXT)
             }),
         model_input,
+        iced::widget::Space::new().height(4.0),
+        text("Auto-check Delay")
+            .size(14)
+            .style(|_t| iced::widget::text::Style {
+                color: Some(COL_TEXT)
+            }),
+        debounce_slider,
         iced::widget::Space::new().height(4.0),
         test_button,
         test_status,

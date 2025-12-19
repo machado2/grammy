@@ -6,26 +6,30 @@ use std::time::Instant;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-const SYSTEM_PROMPT: &str = r#"You are a careful English writing assistant.
-Your job: suggest minimal edits for grammar, clarity, and phrases that sound non-native/awkward.
+const SYSTEM_PROMPT: &str = r#"You are a strict English writing assistant.
+Your job: suggest edits ONLY for:
+1. Grammatical errors.
+2. Typos.
+3. Phrases that are clearly awkward or non-native sounding.
+
 Rules:
-- Do NOT rewrite the whole text.
-- Only propose small localized edits (replace a short span with a short span).
-- Preserve the author's voice and meaning.
-- Prefer fewer suggestions over many.
+- Do NOT suggest stylistic variations if the original is correct.
+- Do NOT rewrite the text.
+- If a sentence is grammatically correct and clear, do NOT suggest anything.
+- If you have a comment (e.g., ambiguity) but no specific correction, leave "replacement" as null.
 
 Return ONLY valid JSON with this exact schema:
 {
   "matches": [
     {
-      "message": "short explanation",
+      "message": "explanation of the error",
       "original": "exact text to replace",
-      "replacement": "corrected text"
+      "replacement": "corrected text or null"
     }
   ]
 }
 
-IMPORTANT: The "original" field must contain the EXACT substring from the input that should be replaced (copy it precisely, including spacing).
+IMPORTANT: The "original" field must contain the EXACT substring from the input (copy it precisely, including spacing).
 If there is nothing to change, return {"matches": []}."#;
 
 pub async fn check_grammar(
@@ -36,8 +40,12 @@ pub async fn check_grammar(
     request_id: u64,
 ) -> Result<(Vec<Suggestion>, u64), String> {
     let start = Instant::now();
-    eprintln!("[DEBUG #{request_id}] Starting grammar check, provider={}, model={}, text_len={}", 
-              provider.name(), model, text.len());
+    eprintln!(
+        "[DEBUG #{request_id}] Starting grammar check, provider={}, model={}, text_len={}",
+        provider.name(),
+        model,
+        text.len()
+    );
 
     if api_key.is_empty() {
         eprintln!("[DEBUG #{request_id}] Error: API key not set");
@@ -53,7 +61,7 @@ pub async fn check_grammar(
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-    
+
     let body = json!({
         "model": model,
         "messages": [
@@ -65,7 +73,7 @@ pub async fn check_grammar(
 
     // OpenRouter requires additional headers and may need different body format
     let url = provider.base_url();
-    
+
     eprintln!("[DEBUG #{request_id}] Sending request to {}", url);
 
     let mut request = client
@@ -80,17 +88,21 @@ pub async fn check_grammar(
             .header("X-Title", "Grammy");
     }
 
-    let response = request
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            eprintln!("[DEBUG #{request_id}] Network error after {:?}: {}", start.elapsed(), e);
-            format!("Network error: {}", e)
-        })?;
+    let response = request.json(&body).send().await.map_err(|e| {
+        eprintln!(
+            "[DEBUG #{request_id}] Network error after {:?}: {}",
+            start.elapsed(),
+            e
+        );
+        format!("Network error: {}", e)
+    })?;
 
     let status = response.status();
-    eprintln!("[DEBUG #{request_id}] Response status: {} after {:?}", status, start.elapsed());
+    eprintln!(
+        "[DEBUG #{request_id}] Response status: {} after {:?}",
+        status,
+        start.elapsed()
+    );
 
     if !status.is_success() {
         let error_body: serde_json::Value = response.json().await.unwrap_or_default();
@@ -101,19 +113,19 @@ pub async fn check_grammar(
         return Err(format!("{} error ({}): {}", provider.name(), status, msg));
     }
 
-    let data: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| {
-            eprintln!("[DEBUG #{request_id}] Failed to parse response: {}", e);
-            format!("Failed to parse response: {}", e)
-        })?;
+    let data: serde_json::Value = response.json().await.map_err(|e| {
+        eprintln!("[DEBUG #{request_id}] Failed to parse response: {}", e);
+        format!("Failed to parse response: {}", e)
+    })?;
 
     let content = data["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or(r#"{"matches":[]}"#);
 
-    eprintln!("[DEBUG #{request_id}] LLM response content: {}", &content[..content.len().min(200)]);
+    eprintln!(
+        "[DEBUG #{request_id}] LLM response content: {}",
+        &content[..content.len().min(200)]
+    );
 
     let llm_response: LlmResponse = serde_json::from_str(content).map_err(|e| {
         eprintln!("[DEBUG #{request_id}] Invalid JSON from LLM: {}", e);
@@ -121,7 +133,11 @@ pub async fn check_grammar(
     })?;
 
     let suggestions = convert_matches_to_suggestions(&text, llm_response.matches);
-    eprintln!("[DEBUG #{request_id}] Completed in {:?}, found {} suggestions", start.elapsed(), suggestions.len());
+    eprintln!(
+        "[DEBUG #{request_id}] Completed in {:?}, found {} suggestions",
+        start.elapsed(),
+        suggestions.len()
+    );
 
     Ok((suggestions, request_id))
 }
@@ -136,7 +152,10 @@ pub async fn test_connection(
     request_id: u64,
 ) -> Result<u64, String> {
     let start = Instant::now();
-    eprintln!("[DEBUG #{request_id}] Starting connection test, provider={}", provider.name());
+    eprintln!(
+        "[DEBUG #{request_id}] Starting connection test, provider={}",
+        provider.name()
+    );
 
     if api_key.is_empty() {
         eprintln!("[DEBUG #{request_id}] Error: API key not set");
@@ -168,12 +187,20 @@ pub async fn test_connection(
     }
 
     let response = request.send().await.map_err(|e| {
-        eprintln!("[DEBUG #{request_id}] Network error after {:?}: {}", start.elapsed(), e);
+        eprintln!(
+            "[DEBUG #{request_id}] Network error after {:?}: {}",
+            start.elapsed(),
+            e
+        );
         format!("Network error: {}", e)
     })?;
 
     let status = response.status();
-    eprintln!("[DEBUG #{request_id}] Test response status: {} after {:?}", status, start.elapsed());
+    eprintln!(
+        "[DEBUG #{request_id}] Test response status: {} after {:?}",
+        status,
+        start.elapsed()
+    );
 
     if !status.is_success() {
         let msg = match response.json::<serde_json::Value>().await {
@@ -182,7 +209,11 @@ pub async fn test_connection(
                 .and_then(|e| e.get("message"))
                 .and_then(|m| m.as_str())
                 .map(|s| s.to_string())
-                .or_else(|| v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+                .or_else(|| {
+                    v.get("message")
+                        .and_then(|m| m.as_str())
+                        .map(|s| s.to_string())
+                })
                 .unwrap_or_else(|| v.to_string()),
             Err(_) => "Unauthorized".to_string(),
         };
@@ -190,7 +221,10 @@ pub async fn test_connection(
         return Err(format!("{} error ({}): {}", provider.name(), status, msg));
     }
 
-    eprintln!("[DEBUG #{request_id}] Connection test succeeded in {:?}", start.elapsed());
+    eprintln!(
+        "[DEBUG #{request_id}] Connection test succeeded in {:?}",
+        start.elapsed()
+    );
     Ok(request_id)
 }
 
@@ -198,11 +232,15 @@ fn convert_matches_to_suggestions(text: &str, matches: Vec<LlmMatch>) -> Vec<Sug
     let mut suggestions = Vec::new();
 
     for m in matches {
-        if m.original.is_empty() || m.replacement.is_empty() {
+        if m.original.is_empty() {
             continue;
         }
-        if m.original == m.replacement {
-            continue;
+
+        // If we have a replacement, ensure it's different from original and not empty
+        if let Some(ref repl) = m.replacement {
+            if repl.is_empty() || repl == &m.original {
+                continue;
+            }
         }
 
         let offset = if let Some(pos) = text.find(&m.original) {
@@ -241,4 +279,76 @@ fn convert_matches_to_suggestions(text: &str, matches: Vec<LlmMatch>) -> Vec<Sug
     }
 
     filtered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normal_suggestion() {
+        let text = "I has a cat.";
+        let matches = vec![LlmMatch {
+            message: "grammar error".to_string(),
+            original: "has".to_string(),
+            replacement: Some("have".to_string()),
+        }];
+
+        let suggestions = convert_matches_to_suggestions(text, matches);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].original, "has");
+        assert_eq!(suggestions[0].replacement, Some("have".to_string()));
+    }
+
+    #[test]
+    fn test_comment_only_suggestion() {
+        let text = "I has a cat.";
+        let matches = vec![LlmMatch {
+            message: "ambiguous phrasing".to_string(),
+            original: "has".to_string(),
+            replacement: None,
+        }];
+
+        let suggestions = convert_matches_to_suggestions(text, matches);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].original, "has");
+        assert!(suggestions[0].replacement.is_none());
+    }
+
+    #[test]
+    fn test_empty_replacement_ignored() {
+        let text = "I has a cat.";
+        let matches = vec![LlmMatch {
+            message: "test".to_string(),
+            original: "has".to_string(),
+            replacement: Some("".to_string()), // Should be ignored as invalid "replacement"
+        }];
+
+        let suggestions = convert_matches_to_suggestions(text, matches);
+        assert_eq!(suggestions.len(), 0);
+    }
+
+    #[test]
+    fn test_overlapping_suggestions() {
+        let text = "I has a cat.";
+        // "I has" (0..5) and "has" (2..5)
+        // logic sorts by offset, then filters overlaps
+        let matches = vec![
+            LlmMatch {
+                message: "long".to_string(),
+                original: "I has".to_string(),
+                replacement: Some("I have".to_string()),
+            },
+            LlmMatch {
+                message: "short".to_string(),
+                original: "has".to_string(),
+                replacement: Some("have".to_string()),
+            },
+        ];
+
+        let suggestions = convert_matches_to_suggestions(text, matches);
+        // Should keep "I has" (starts at 0) and drop "has" (starts at 2, which is < 0+5)
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].original, "I has");
+    }
 }

@@ -1,6 +1,6 @@
 # Grammy
 
-A native Rust desktop application for grammar checking powered by OpenAI-compatible chat completion APIs.
+A native Rust desktop application for grammar checking powered by OpenAI-compatible chat completion APIs. (Default: OpenRouter with Gemini 3 Flash Preview)
 
 ## Features
 

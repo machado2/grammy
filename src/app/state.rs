@@ -12,7 +12,7 @@ use super::draft;
 use super::style;
 use super::ui;
 
-const DEBOUNCE_MS: u64 = 800;
+// DEBOUNCE_MS removed, using config instead
 const TICK_MS: u64 = 50;
 const AUTOSAVE_SECS: u64 = 30;
 
@@ -38,6 +38,7 @@ pub enum Message {
     TempOpenAiKeyChanged(String),
     TempOpenRouterKeyChanged(String),
     TempModelChanged(String),
+    TempDebounceChanged(f32),
 
     SaveSettings,
     StartTestConnection,
@@ -62,6 +63,7 @@ pub struct State {
     pub(super) temp_openrouter_api_key: String,
     pub(super) temp_model: String,
     pub(super) temp_provider: ApiProvider,
+    pub(super) temp_debounce_ms: f32,
 
     pub(super) test_status: String,
     pub(super) is_testing: bool,
@@ -107,6 +109,7 @@ pub fn new() -> (State, Task<Message>) {
             temp_openrouter_api_key: config.openrouter_api_key,
             temp_model: config.model,
             temp_provider: config.provider,
+            temp_debounce_ms: config.debounce_ms as f32,
             test_status: String::new(),
             is_testing: false,
             current_test_request_id: None,
@@ -216,6 +219,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.temp_openrouter_api_key = state.config.openrouter_api_key.clone();
             state.temp_model = state.config.model.clone();
             state.temp_provider = state.config.provider.clone();
+            state.temp_debounce_ms = state.config.debounce_ms as f32;
             state.show_api_key = false;
             state.test_status.clear();
             state.show_settings = true;
@@ -256,6 +260,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.temp_model = v;
             Task::none()
         }
+        Message::TempDebounceChanged(v) => {
+            state.temp_debounce_ms = v;
+            Task::none()
+        }
 
         Message::SaveSettings => {
             state.config.openai_api_key = state.temp_openai_api_key.trim().to_string();
@@ -266,6 +274,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 state.temp_model.trim().to_string()
             };
+            state.config.debounce_ms = state.temp_debounce_ms as u64;
             state.config.save();
             state.show_settings = false;
             state.status = "Settings saved".to_string();
@@ -317,8 +326,7 @@ pub fn theme(state: &State) -> Theme {
 pub fn subscription(_state: &State) -> Subscription<Message> {
     Subscription::batch([
         iced::time::every(Duration::from_millis(TICK_MS)).map(|_| Message::Tick),
-        iced::time::every(Duration::from_secs(AUTOSAVE_SECS))
-            .map(|_| Message::AutosaveTick),
+        iced::time::every(Duration::from_secs(AUTOSAVE_SECS)).map(|_| Message::AutosaveTick),
         window::close_requests().map(Message::WindowCloseRequested),
     ])
 }
@@ -336,7 +344,12 @@ fn tick_debounce(state: &mut State) {
     }
 
     if let Some(edit_time) = state.last_edit_time {
-        if edit_time.elapsed() >= Duration::from_millis(DEBOUNCE_MS) {
+        let delay = state.config.debounce_ms;
+        // If delay > 5000, we treat it as "Never"
+        if delay > 5000 {
+            return;
+        }
+        if edit_time.elapsed() >= Duration::from_millis(delay) {
             state.last_edit_time = None;
             check_text(state);
         }
@@ -415,13 +428,19 @@ fn process_api_responses(state: &mut State) {
                     }
 
                     if state.pending_recheck {
-                        state.pending_recheck = false;
-                        state.last_edit_time = Some(
-                            Instant::now() - Duration::from_millis(DEBOUNCE_MS),
-                        );
+                        let delay = state.config.debounce_ms;
+                        if delay <= 5000 {
+                            state.last_edit_time =
+                                Some(Instant::now() - Duration::from_millis(delay));
+                        } else {
+                            state.pending_recheck = false;
+                        }
                     }
                 }
-                ApiResponse::GrammarError { message, request_id } => {
+                ApiResponse::GrammarError {
+                    message,
+                    request_id,
+                } => {
                     if state.current_check_request_id != Some(request_id) {
                         continue;
                     }
@@ -431,10 +450,14 @@ fn process_api_responses(state: &mut State) {
                     state.status = message;
 
                     if state.pending_recheck {
-                        state.pending_recheck = false;
-                        state.last_edit_time = Some(
-                            Instant::now() - Duration::from_millis(DEBOUNCE_MS),
-                        );
+                        let delay = state.config.debounce_ms;
+                        // Only recheck if auto-check is enabled (<= 5000)
+                        if delay <= 5000 {
+                            state.last_edit_time =
+                                Some(Instant::now() - Duration::from_millis(delay));
+                        } else {
+                            state.pending_recheck = false; // Cancel pending recheck if disabled
+                        }
                     }
                 }
                 ApiResponse::TestSuccess { request_id } => {
@@ -446,7 +469,10 @@ fn process_api_responses(state: &mut State) {
                     state.current_test_request_id = None;
                     state.test_status = "Connection OK".to_string();
                 }
-                ApiResponse::TestError { message, request_id } => {
+                ApiResponse::TestError {
+                    message,
+                    request_id,
+                } => {
                     if state.current_test_request_id != Some(request_id) {
                         continue;
                     }
@@ -493,9 +519,14 @@ fn apply_suggestion(state: &mut State, suggestion_id: &str) {
         return;
     }
 
-    let new_text = format!("{}{}{}", &text[..start], suggestion.replacement, &text[end..]);
+    let replacement = match &suggestion.replacement {
+        Some(r) => r,
+        None => return, // Cannot apply a comment-only suggestion
+    };
 
-    let delta = suggestion.replacement.len() as isize - suggestion.length as isize;
+    let new_text = format!("{}{}{}", &text[..start], replacement, &text[end..]);
+
+    let delta = replacement.len() as isize - suggestion.length as isize;
 
     state.suggestions.retain(|s| s.id != suggestion_id);
     for s in &mut state.suggestions {

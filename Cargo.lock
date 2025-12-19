@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "grammy"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "confy",
  "directories",
