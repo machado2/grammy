@@ -148,7 +148,15 @@ fn suggestions_sidebar(state: &State) -> Element<'_, Message> {
     ]
     .spacing(16);
 
-    let body: Element<_> = if state.is_checking {
+    let body: Element<_> = if state.last_edit_time.is_some() {
+        container(text("...").size(14).style(|_t| iced::widget::text::Style {
+            color: Some(COL_MUTED),
+        }))
+        .center_x(Fill)
+        .center_y(Fill)
+        .height(Fill)
+        .into()
+    } else if state.is_checking {
         container(
             text("Checking...")
                 .size(14)
