@@ -1,6 +1,7 @@
 mod api_worker;
 mod draft;
 mod highlight;
+pub mod history;
 mod state;
 mod style;
 mod ui;

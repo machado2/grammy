@@ -7,9 +7,10 @@ pub(super) const COL_PANEL: Color = color!(0x1A1F35); // Lighter navy for panels
 pub(super) const COL_TEXT: Color = color!(0xE0E6ED); // Soft white
 pub(super) const COL_MUTED: Color = color!(0x94A3B8); // Muted slate
 pub(super) const COL_ACCENT: Color = color!(0x6366F1); // Indigo
-pub(super) const COL_ACCENT_HOVER: Color = color!(0x818CF8);
 pub(super) const COL_SUCCESS: Color = color!(0x10B981); // Emerald
-pub(super) const COL_DANGER: Color = color!(0xEF4444); // Red
+pub(super) const COL_DANGER: Color = color!(0xEF4444); // Red - Errors
+pub(super) const COL_WARNING: Color = color!(0xF59E0B); // Amber - Warnings
+pub(super) const COL_SUGGESTION: Color = color!(0xFDE047); // Yellow - Suggestions
 pub(super) const COL_BORDER: Color = Color {
     r: 1.0,
     g: 1.0,

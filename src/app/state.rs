@@ -9,6 +9,7 @@ use crate::suggestion::Suggestion;
 
 use super::api_worker::{spawn_api_worker, ApiJob, ApiRequest, ApiResponse};
 use super::draft;
+use super::history::MessageHistory;
 use super::style;
 use super::ui;
 
@@ -73,6 +74,9 @@ pub struct State {
     pub(super) is_checking: bool,
     pub(super) current_check_request_id: Option<u64>,
     pub(super) pending_recheck: bool,
+    pub(super) pending_check_text: Option<String>,
+
+    pub(super) message_history: MessageHistory,
 
     pub(super) api_sender: Sender<ApiRequest>,
     pub(super) api_receiver: Receiver<ApiResponse>,
@@ -117,6 +121,8 @@ pub fn new() -> (State, Task<Message>) {
             is_checking: false,
             current_check_request_id: None,
             pending_recheck: false,
+            pending_check_text: None,
+            message_history: MessageHistory::default(),
             api_sender: request_tx,
             api_receiver: response_rx,
         },
@@ -390,13 +396,22 @@ fn check_text(state: &mut State) {
 
     let request = ApiRequest {
         job: ApiJob::Grammar {
-            text,
+            text: text.clone(),
             api_key: state.config.api_key_for_provider(&state.config.provider),
             model: state.config.model.clone(),
             provider: state.config.provider.clone(),
+            history: state
+                .message_history
+                .get_entries()
+                .into_iter()
+                .cloned()
+                .collect(),
         },
         request_id,
     };
+
+    // Store the text for later use in history
+    state.pending_check_text = Some(text);
 
     if let Err(e) = state.api_sender.send(request) {
         state.status = format!("Internal error: failed to send request ({})", e);
@@ -419,6 +434,29 @@ fn process_api_responses(state: &mut State) {
 
                     state.is_checking = false;
                     state.current_check_request_id = None;
+
+                    // Save to history for cycle prevention
+                    if let Some(user_text) = state.pending_check_text.take() {
+                        // Format LLM response as JSON for history context
+                        let assistant_content = if suggestions.is_empty() {
+                            r#"{"matches":[]}"#.to_string()
+                        } else {
+                            serde_json::to_string(&serde_json::json!({
+                                "matches": suggestions.iter().map(|s| {
+                                    serde_json::json!({
+                                        "message": s.message,
+                                        "original": s.original,
+                                        "replacement": s.replacement,
+                                        "severity": format!("{:?}", s.severity).to_lowercase()
+                                    })
+                                }).collect::<Vec<_>>()
+                            }))
+                            .unwrap_or_else(|_| r#"{"matches":[]}"#.to_string())
+                        };
+                        state
+                            .message_history
+                            .push_pair(format!("Text:\n{}", user_text), assistant_content);
+                    }
 
                     state.suggestions = suggestions;
                     if state.suggestions.is_empty() {

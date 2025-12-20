@@ -4,6 +4,8 @@ use crate::api;
 use crate::config::ApiProvider;
 use crate::suggestion::Suggestion;
 
+use super::history::HistoryEntry;
+
 #[derive(Debug)]
 pub(super) enum ApiJob {
     Grammar {
@@ -11,6 +13,7 @@ pub(super) enum ApiJob {
         api_key: String,
         model: String,
         provider: ApiProvider,
+        history: Vec<HistoryEntry>,
     },
     TestConnection {
         api_key: String,
@@ -60,7 +63,12 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                         api_key,
                         model,
                         provider,
-                    } => match api::check_grammar(text, api_key, model, provider, request_id).await {
+                        history,
+                    } => match api::check_grammar(
+                        text, api_key, model, provider, request_id, history,
+                    )
+                    .await
+                    {
                         Ok((suggestions, req_id)) => {
                             let _ = tx.send(ApiResponse::GrammarSuccess {
                                 suggestions,

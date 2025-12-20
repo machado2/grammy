@@ -21,6 +21,7 @@ async fn test_openai_grammar_check() {
         "gpt-4o-mini".to_string(), // verify with a cheap smart model
         ApiProvider::OpenAI,
         1,
+        vec![], // No history for tests
     )
     .await
     .expect("Grammar check failed");
@@ -58,6 +59,7 @@ async fn test_openai_comment_only() {
         "gpt-4o-mini".to_string(),
         ApiProvider::OpenAI,
         2,
+        vec![], // No history for tests
     )
     .await;
 

@@ -6,12 +6,13 @@ use iced::widget::{
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
 use crate::config::ApiProvider;
+use crate::suggestion::Severity;
 
 use super::state::{Message, State};
 use super::style::{
     btn_ghost, btn_primary, btn_secondary, btn_success, editor_style, glass_container,
     glass_editor, rule_muted, text_input as style_text_input, COL_BG, COL_DANGER, COL_MUTED,
-    COL_SUCCESS, COL_TEXT,
+    COL_SUCCESS, COL_SUGGESTION, COL_TEXT, COL_WARNING,
 };
 use super::{highlight, highlight::SuggestionHighlighter};
 
@@ -213,6 +214,19 @@ fn suggestion_card<'a>(
     s: &'a crate::suggestion::Suggestion,
     hovered: bool,
 ) -> Element<'a, Message> {
+    // Severity-based styling
+    let (severity_label, severity_color) = match s.severity {
+        Severity::Error => ("Error", COL_DANGER),
+        Severity::Warning => ("Warning", COL_WARNING),
+        Severity::Suggestion => ("Suggestion", COL_SUGGESTION),
+    };
+
+    let badge = text(severity_label)
+        .size(11)
+        .style(move |_t| iced::widget::text::Style {
+            color: Some(severity_color),
+        });
+
     let message = text(&s.message)
         .size(13)
         .style(|_t| iced::widget::text::Style {
@@ -223,8 +237,8 @@ fn suggestion_card<'a>(
         .size(14)
         .wrapping(Wrapping::WordOrGlyph)
         .width(Fill)
-        .style(|_t| iced::widget::text::Style {
-            color: Some(COL_DANGER),
+        .style(move |_t| iced::widget::text::Style {
+            color: Some(severity_color),
         });
 
     let (diff_row, actions) = if let Some(ref replacement_text) = s.replacement {
@@ -280,7 +294,14 @@ fn suggestion_card<'a>(
 
     container(
         column![
-            message,
+            row![
+                badge,
+                text(" · ").size(11).style(|_t| iced::widget::text::Style {
+                    color: Some(COL_MUTED)
+                }),
+                message
+            ]
+            .align_y(Alignment::Center),
             diff_row,
             iced::widget::Space::new().height(4.0),
             actions

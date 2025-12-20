@@ -1,5 +1,6 @@
+use crate::app::history::HistoryEntry;
 use crate::config::ApiProvider;
-use crate::suggestion::{LlmMatch, LlmResponse, Suggestion};
+use crate::suggestion::{LlmMatch, LlmResponse, Severity, Suggestion};
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -24,10 +25,16 @@ Return ONLY valid JSON with this exact schema:
     {
       "message": "explanation of the error",
       "original": "exact text to replace",
-      "replacement": "corrected text or null"
+      "replacement": "corrected text or null",
+      "severity": "error|warning|suggestion"
     }
   ]
 }
+
+Severity levels:
+- "error": Grammar errors, typos, incorrect word usage
+- "warning": Awkward phrasing, non-native sounding expressions
+- "suggestion": Minor improvements, optional enhancements
 
 IMPORTANT: The "original" field must contain the EXACT substring from the input (copy it precisely, including spacing).
 If there is nothing to change, return {"matches": []}."#;
@@ -38,6 +45,7 @@ pub async fn check_grammar(
     model: String,
     provider: ApiProvider,
     request_id: u64,
+    history: Vec<HistoryEntry>,
 ) -> Result<(Vec<Suggestion>, u64), String> {
     let start = Instant::now();
     eprintln!(
@@ -62,12 +70,26 @@ pub async fn check_grammar(
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
+    // Build messages array: system prompt + history + current user message
+    let mut messages = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
+
+    // Add history entries (user/assistant pairs)
+    for entry in &history {
+        messages.push(json!({
+            "role": entry.role,
+            "content": entry.content
+        }));
+    }
+
+    // Add current user message
+    messages.push(json!({
+        "role": "user",
+        "content": format!("Text:\n{}", text)
+    }));
+
     let body = json!({
         "model": model,
-        "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
-            { "role": "user", "content": format!("Text:\n{}", text) }
-        ],
+        "messages": messages,
         "response_format": { "type": "json_object" }
     });
 
@@ -261,6 +283,7 @@ fn convert_matches_to_suggestions(text: &str, matches: Vec<LlmMatch>) -> Vec<Sug
             offset,
             m.original,
             m.replacement,
+            m.severity,
         ));
     }
 
@@ -292,6 +315,7 @@ mod tests {
             message: "grammar error".to_string(),
             original: "has".to_string(),
             replacement: Some("have".to_string()),
+            severity: Severity::Error,
         }];
 
         let suggestions = convert_matches_to_suggestions(text, matches);
@@ -307,6 +331,7 @@ mod tests {
             message: "ambiguous phrasing".to_string(),
             original: "has".to_string(),
             replacement: None,
+            severity: Severity::Warning,
         }];
 
         let suggestions = convert_matches_to_suggestions(text, matches);
@@ -322,6 +347,7 @@ mod tests {
             message: "test".to_string(),
             original: "has".to_string(),
             replacement: Some("".to_string()), // Should be ignored as invalid "replacement"
+            severity: Severity::Error,
         }];
 
         let suggestions = convert_matches_to_suggestions(text, matches);
@@ -338,11 +364,13 @@ mod tests {
                 message: "long".to_string(),
                 original: "I has".to_string(),
                 replacement: Some("I have".to_string()),
+                severity: Severity::Error,
             },
             LlmMatch {
                 message: "short".to_string(),
                 original: "has".to_string(),
                 replacement: Some("have".to_string()),
+                severity: Severity::Error,
             },
         ];
 

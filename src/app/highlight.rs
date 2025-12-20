@@ -4,7 +4,7 @@ use iced::advanced::text::highlighter::Format;
 use iced::advanced::text::Highlighter;
 use iced::{Color, Font, Theme};
 
-use crate::suggestion::Suggestion;
+use crate::suggestion::{Severity, Suggestion};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Span {
@@ -21,8 +21,10 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Highlight {
-    Suggestion,
-    HoveredSuggestion,
+    Error,      // Red - grammar errors, typos
+    Warning,    // Orange - awkward phrasing
+    Suggestion, // Yellow - minor improvements
+    Hovered,    // Blue - currently hovered
 }
 
 pub fn compute_line_starts(text: &str) -> Vec<usize> {
@@ -38,11 +40,7 @@ pub fn compute_line_starts(text: &str) -> Vec<usize> {
     starts
 }
 
-
-pub fn spans_from_suggestions(
-    suggestions: &[Suggestion],
-    hovered_id: Option<&str>,
-) -> Vec<Span> {
+pub fn spans_from_suggestions(suggestions: &[Suggestion], hovered_id: Option<&str>) -> Vec<Span> {
     suggestions
         .iter()
         .filter_map(|s| {
@@ -50,14 +48,20 @@ pub fn spans_from_suggestions(
                 return None;
             }
 
+            let kind = if hovered_id == Some(s.id.as_str()) {
+                Highlight::Hovered
+            } else {
+                match s.severity {
+                    Severity::Error => Highlight::Error,
+                    Severity::Warning => Highlight::Warning,
+                    Severity::Suggestion => Highlight::Suggestion,
+                }
+            };
+
             Some(Span {
                 start: s.offset,
                 end: s.offset + s.length,
-                kind: if hovered_id == Some(s.id.as_str()) {
-                    Highlight::HoveredSuggestion
-                } else {
-                    Highlight::Suggestion
-                },
+                kind,
             })
         })
         .collect()
@@ -155,28 +159,46 @@ impl Highlighter for SuggestionHighlighter {
 }
 
 pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
-    // We only have access to text color/font in the highlighter output.
-    // For now, we approximate the old inline highlights with color changes.
-    // Style B: stronger colors
-    let suggestion: Color = Color {
+    // Severity-based colors for text highlighting
+    let error: Color = Color {
         r: 1.0,
         g: 0.35,
         b: 0.35,
         a: 1.0,
-    };
+    }; // Red
+    let warning: Color = Color {
+        r: 1.0,
+        g: 0.6,
+        b: 0.2,
+        a: 1.0,
+    }; // Orange
+    let suggestion: Color = Color {
+        r: 1.0,
+        g: 0.85,
+        b: 0.3,
+        a: 1.0,
+    }; // Yellow
     let hovered: Color = Color {
         r: 0.25,
         g: 0.75,
         b: 1.0,
         a: 1.0,
-    };
+    }; // Blue
 
     match highlight {
+        Highlight::Error => Format {
+            color: Some(error),
+            font: None,
+        },
+        Highlight::Warning => Format {
+            color: Some(warning),
+            font: None,
+        },
         Highlight::Suggestion => Format {
             color: Some(suggestion),
             font: None,
         },
-        Highlight::HoveredSuggestion => Format {
+        Highlight::Hovered => Format {
             color: Some(hovered),
             font: None,
         },
