@@ -38,8 +38,10 @@ pub enum Message {
     SelectProvider(ApiProvider),
     TempOpenAiKeyChanged(String),
     TempOpenRouterKeyChanged(String),
+    TempGeminiKeyChanged(String),
     TempModelChanged(String),
     TempDebounceChanged(f32),
+    ModelSelected(String),
 
     SaveSettings,
     StartTestConnection,
@@ -62,9 +64,15 @@ pub struct State {
     pub(super) show_api_key: bool,
     pub(super) temp_openai_api_key: String,
     pub(super) temp_openrouter_api_key: String,
+    pub(super) temp_gemini_api_key: String,
     pub(super) temp_model: String,
     pub(super) temp_provider: ApiProvider,
     pub(super) temp_debounce_ms: f32,
+
+    pub(super) openai_models: Vec<String>,
+    pub(super) openrouter_models: Vec<String>,
+    pub(super) gemini_models: Vec<String>,
+    pub(super) model_combo_state: iced::widget::combo_box::State<String>,
 
     pub(super) test_status: String,
     pub(super) is_testing: bool,
@@ -109,11 +117,18 @@ pub fn new() -> (State, Task<Message>) {
             config: config.clone(),
             show_settings: false,
             show_api_key: false,
-            temp_openai_api_key: config.openai_api_key,
-            temp_openrouter_api_key: config.openrouter_api_key,
+            temp_openai_api_key: config.openai_api_key.clone(),
+            temp_openrouter_api_key: config.openrouter_api_key.clone(),
+            temp_gemini_api_key: config.gemini_api_key.clone(),
             temp_model: config.model,
             temp_provider: config.provider,
             temp_debounce_ms: config.debounce_ms as f32,
+
+            openai_models: Vec::new(),
+            openrouter_models: Vec::new(),
+            gemini_models: Vec::new(),
+            model_combo_state: iced::widget::combo_box::State::new(Vec::new()),
+
             test_status: String::new(),
             is_testing: false,
             current_test_request_id: None,
@@ -223,12 +238,16 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::OpenSettings => {
             state.temp_openai_api_key = state.config.openai_api_key.clone();
             state.temp_openrouter_api_key = state.config.openrouter_api_key.clone();
+            state.temp_gemini_api_key = state.config.gemini_api_key.clone();
             state.temp_model = state.config.model.clone();
             state.temp_provider = state.config.provider.clone();
             state.temp_debounce_ms = state.config.debounce_ms as f32;
             state.show_api_key = false;
             state.test_status.clear();
             state.show_settings = true;
+
+            // Trigger model fetching for current provider
+            fetch_models_if_needed(state);
             Task::none()
         }
         Message::CloseSettings => {
@@ -242,24 +261,26 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 
         Message::SelectProvider(p) => {
             state.temp_provider = p.clone();
-            if matches!(p, ApiProvider::OpenAI) {
-                if state.temp_model.is_empty() || state.temp_model.starts_with("openai/") {
-                    state.temp_model = ApiProvider::OpenAI.default_model().to_string();
-                }
-            } else if state.temp_model.is_empty() || !state.temp_model.contains('/') {
-                state.temp_model = ApiProvider::OpenRouter.default_model().to_string();
-            }
+            state.temp_model = state.temp_provider.default_model().to_string();
             state.test_status.clear();
             state.show_api_key = false;
+            fetch_models_if_needed(state);
             Task::none()
         }
 
         Message::TempOpenAiKeyChanged(v) => {
             state.temp_openai_api_key = v;
+            fetch_models_if_needed(state);
             Task::none()
         }
         Message::TempOpenRouterKeyChanged(v) => {
             state.temp_openrouter_api_key = v;
+            fetch_models_if_needed(state);
+            Task::none()
+        }
+        Message::TempGeminiKeyChanged(v) => {
+            state.temp_gemini_api_key = v;
+            fetch_models_if_needed(state);
             Task::none()
         }
         Message::TempModelChanged(v) => {
@@ -270,10 +291,15 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.temp_debounce_ms = v;
             Task::none()
         }
+        Message::ModelSelected(v) => {
+            state.temp_model = v;
+            Task::none()
+        }
 
         Message::SaveSettings => {
             state.config.openai_api_key = state.temp_openai_api_key.trim().to_string();
             state.config.openrouter_api_key = state.temp_openrouter_api_key.trim().to_string();
+            state.config.gemini_api_key = state.temp_gemini_api_key.trim().to_string();
             state.config.provider = state.temp_provider.clone();
             state.config.model = if state.temp_model.trim().is_empty() {
                 state.config.provider.default_model().to_string()
@@ -300,12 +326,14 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             let api_key = match state.temp_provider {
                 ApiProvider::OpenAI => state.temp_openai_api_key.trim().to_string(),
                 ApiProvider::OpenRouter => state.temp_openrouter_api_key.trim().to_string(),
+                ApiProvider::Gemini => state.temp_gemini_api_key.trim().to_string(),
             };
 
             let request = ApiRequest {
                 job: ApiJob::TestConnection {
                     api_key,
                     provider: state.temp_provider.clone(),
+                    model: state.temp_model.clone(),
                 },
                 request_id,
             };
@@ -519,6 +547,25 @@ fn process_api_responses(state: &mut State) {
                     state.current_test_request_id = None;
                     state.test_status = message;
                 }
+                ApiResponse::ModelsSuccess { models, provider } => {
+                    match provider {
+                        ApiProvider::OpenAI => state.openai_models = models,
+                        ApiProvider::OpenRouter => state.openrouter_models = models,
+                        ApiProvider::Gemini => state.gemini_models = models,
+                    }
+                    if provider == state.temp_provider {
+                        let models = match state.temp_provider {
+                            ApiProvider::OpenAI => &state.openai_models,
+                            ApiProvider::OpenRouter => &state.openrouter_models,
+                            ApiProvider::Gemini => &state.gemini_models,
+                        };
+                        state.model_combo_state =
+                            iced::widget::combo_box::State::new(models.clone());
+                    }
+                }
+                ApiResponse::ModelsError { message } => {
+                    eprintln!("[DEBUG] Failed to fetch models: {}", message);
+                }
             },
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
@@ -527,6 +574,45 @@ fn process_api_responses(state: &mut State) {
             }
         }
     }
+}
+
+fn fetch_models_if_needed(state: &mut State) {
+    let api_key = match state.temp_provider {
+        ApiProvider::OpenAI => &state.temp_openai_api_key,
+        ApiProvider::OpenRouter => &state.temp_openrouter_api_key,
+        ApiProvider::Gemini => &state.temp_gemini_api_key,
+    };
+
+    if api_key.is_empty() {
+        return;
+    }
+
+    // Check if we already have models for this provider
+    let has_models = match state.temp_provider {
+        ApiProvider::OpenAI => !state.openai_models.is_empty(),
+        ApiProvider::OpenRouter => !state.openrouter_models.is_empty(),
+        ApiProvider::Gemini => !state.gemini_models.is_empty(),
+    };
+
+    if has_models {
+        let models = match state.temp_provider {
+            ApiProvider::OpenAI => &state.openai_models,
+            ApiProvider::OpenRouter => &state.openrouter_models,
+            ApiProvider::Gemini => &state.gemini_models,
+        };
+        state.model_combo_state = iced::widget::combo_box::State::new(models.clone());
+    }
+
+    let request_id = crate::api::next_request_id();
+    let request = ApiRequest {
+        job: ApiJob::FetchModels {
+            api_key: api_key.clone(),
+            provider: state.temp_provider.clone(),
+        },
+        request_id,
+    };
+
+    let _ = state.api_sender.send(request);
 }
 
 fn apply_suggestion(state: &mut State, suggestion_id: &str) {

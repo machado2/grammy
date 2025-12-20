@@ -5,6 +5,7 @@ pub enum ApiProvider {
     OpenAI,
     #[default]
     OpenRouter,
+    Gemini,
 }
 
 impl ApiProvider {
@@ -12,6 +13,7 @@ impl ApiProvider {
         match self {
             ApiProvider::OpenAI => "https://api.openai.com/v1/chat/completions",
             ApiProvider::OpenRouter => "https://openrouter.ai/api/v1/chat/completions",
+            ApiProvider::Gemini => "https://generativelanguage.googleapis.com/v1beta/models/",
         }
     }
 
@@ -19,6 +21,7 @@ impl ApiProvider {
         match self {
             ApiProvider::OpenAI => "OpenAI",
             ApiProvider::OpenRouter => "OpenRouter",
+            ApiProvider::Gemini => "Gemini",
         }
     }
 
@@ -26,6 +29,7 @@ impl ApiProvider {
         match self {
             ApiProvider::OpenAI => "gpt-4o-mini",
             ApiProvider::OpenRouter => "google/gemini-3-flash-preview",
+            ApiProvider::Gemini => "gemini-2.0-flash-exp",
         }
     }
 }
@@ -36,6 +40,8 @@ pub struct Config {
     pub openai_api_key: String,
     #[serde(default)]
     pub openrouter_api_key: String,
+    #[serde(default)]
+    pub gemini_api_key: String,
     #[serde(default, rename = "api_key")]
     pub legacy_api_key: Option<String>,
     pub model: String,
@@ -54,6 +60,7 @@ impl Default for Config {
         Self {
             openai_api_key: String::new(),
             openrouter_api_key: String::new(),
+            gemini_api_key: String::new(),
             legacy_api_key: None,
             model: "google/gemini-3-flash-preview".to_string(),
             provider: ApiProvider::OpenRouter,
@@ -86,6 +93,7 @@ impl Config {
         match provider {
             ApiProvider::OpenAI => self.openai_api_key.clone(),
             ApiProvider::OpenRouter => self.openrouter_api_key.clone(),
+            ApiProvider::Gemini => self.gemini_api_key.clone(),
         }
     }
 }

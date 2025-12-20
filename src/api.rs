@@ -1,6 +1,6 @@
 use crate::app::history::HistoryEntry;
 use crate::config::ApiProvider;
-use crate::suggestion::{LlmMatch, LlmResponse, Severity, Suggestion};
+use crate::suggestion::{LlmMatch, LlmResponse, Suggestion};
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -87,30 +87,52 @@ pub async fn check_grammar(
         "content": format!("Text:\n{}", text)
     }));
 
-    let body = json!({
-        "model": model,
-        "messages": messages,
-        "response_format": { "type": "json_object" }
-    });
-
-    // OpenRouter requires additional headers and may need different body format
-    let url = provider.base_url();
+    let url = if provider == ApiProvider::Gemini {
+        format!(
+            "{}{}:generateContent?key={}",
+            provider.base_url(),
+            model,
+            api_key
+        )
+    } else {
+        provider.base_url().to_string()
+    };
 
     eprintln!("[DEBUG #{request_id}] Sending request to {}", url);
 
-    let mut request = client
-        .post(url)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", api_key));
+    let mut request = client.post(&url).header("Content-Type", "application/json");
 
-    // Add OpenRouter-specific headers
-    if provider == ApiProvider::OpenRouter {
+    if provider == ApiProvider::Gemini {
+        let body = json!({
+            "contents": [{
+                "parts": [{
+                    "text": format!("{}\n\nText:\n{}", SYSTEM_PROMPT, text)
+                }]
+            }],
+            "generationConfig": {
+                "responseMimeType": "application/json"
+            }
+        });
+        request = request.json(&body);
+    } else {
+        let body = json!({
+            "model": model,
+            "messages": messages,
+            "response_format": { "type": "json_object" }
+        });
         request = request
-            .header("HTTP-Referer", "https://github.com/grammy-app")
-            .header("X-Title", "Grammy");
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&body);
+
+        // Add OpenRouter-specific headers
+        if provider == ApiProvider::OpenRouter {
+            request = request
+                .header("HTTP-Referer", "https://github.com/grammy-app")
+                .header("X-Title", "Grammy");
+        }
     }
 
-    let response = request.json(&body).send().await.map_err(|e| {
+    let response = request.send().await.map_err(|e| {
         eprintln!(
             "[DEBUG #{request_id}] Network error after {:?}: {}",
             start.elapsed(),
@@ -128,9 +150,15 @@ pub async fn check_grammar(
 
     if !status.is_success() {
         let error_body: serde_json::Value = response.json().await.unwrap_or_default();
-        let msg = error_body["error"]["message"]
-            .as_str()
-            .unwrap_or("Unknown error");
+        let msg = if provider == ApiProvider::Gemini {
+            error_body["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown Gemini error")
+        } else {
+            error_body["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown error")
+        };
         eprintln!("[DEBUG #{request_id}] API error: {} - {}", status, msg);
         return Err(format!("{} error ({}): {}", provider.name(), status, msg));
     }
@@ -140,9 +168,15 @@ pub async fn check_grammar(
         format!("Failed to parse response: {}", e)
     })?;
 
-    let content = data["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or(r#"{"matches":[]}"#);
+    let content = if provider == ApiProvider::Gemini {
+        data["candidates"][0]["content"]["parts"][0]["text"]
+            .as_str()
+            .unwrap_or(r#"{"matches":[]}"#)
+    } else {
+        data["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or(r#"{"matches":[]}"#)
+    };
 
     eprintln!(
         "[DEBUG #{request_id}] LLM response content: {}",
@@ -171,12 +205,14 @@ pub fn next_request_id() -> u64 {
 pub async fn test_connection(
     api_key: String,
     provider: ApiProvider,
+    model: String,
     request_id: u64,
 ) -> Result<u64, String> {
     let start = Instant::now();
     eprintln!(
-        "[DEBUG #{request_id}] Starting connection test, provider={}",
-        provider.name()
+        "[DEBUG #{request_id}] Starting connection test, provider={}, model={}",
+        provider.name(),
+        model
     );
 
     if api_key.is_empty() {
@@ -189,18 +225,29 @@ pub async fn test_connection(
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    // NOTE: /models on OpenRouter may return 200 without authentication, which can
-    // produce false positives. Use an endpoint that requires auth.
-    let url = match provider {
-        ApiProvider::OpenAI => "https://api.openai.com/v1/models",
-        ApiProvider::OpenRouter => "https://openrouter.ai/api/v1/key",
+    let (url, is_post) = match provider {
+        ApiProvider::OpenAI => ("https://api.openai.com/v1/models".to_string(), false),
+        ApiProvider::OpenRouter => ("https://openrouter.ai/api/v1/key".to_string(), false),
+        ApiProvider::Gemini => (
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+                api_key
+            ),
+            false,
+        ),
     };
 
     eprintln!("[DEBUG #{request_id}] Sending test request to {}", url);
 
-    let mut request = client
-        .get(url)
-        .header("Authorization", format!("Bearer {}", api_key));
+    let mut request = if is_post {
+        client.post(&url)
+    } else {
+        client.get(&url)
+    };
+
+    if provider != ApiProvider::Gemini {
+        request = request.header("Authorization", format!("Bearer {}", api_key));
+    }
 
     if provider == ApiProvider::OpenRouter {
         request = request
@@ -243,11 +290,78 @@ pub async fn test_connection(
         return Err(format!("{} error ({}): {}", provider.name(), status, msg));
     }
 
+    // If we're here, connection is OK. Now validate model if provided and not Gemini (which lists models already)
+    // Actually, let's just check if the model is in the list of models for the provider.
+    let models = fetch_models(provider.clone(), api_key).await?;
+    if !model.is_empty() && !models.iter().any(|m| m == &model) {
+        return Err(format!(
+            "Model '{}' not found for {}",
+            model,
+            provider.name()
+        ));
+    }
+
     eprintln!(
         "[DEBUG #{request_id}] Connection test succeeded in {:?}",
         start.elapsed()
     );
     Ok(request_id)
+}
+
+pub async fn fetch_models(provider: ApiProvider, api_key: String) -> Result<Vec<String>, String> {
+    if api_key.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let client = reqwest::Client::new();
+    let url = match provider {
+        ApiProvider::OpenAI => "https://api.openai.com/v1/models".to_string(),
+        ApiProvider::OpenRouter => "https://openrouter.ai/api/v1/models".to_string(),
+        ApiProvider::Gemini => format!(
+            "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+            api_key
+        ),
+    };
+
+    let mut request = client.get(&url);
+    if provider != ApiProvider::Gemini {
+        request = request.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = request.send().await.map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("Failed to fetch models: {}", response.status()));
+    }
+
+    let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let mut models = Vec::new();
+
+    match provider {
+        ApiProvider::OpenAI | ApiProvider::OpenRouter => {
+            if let Some(data_array) = data["data"].as_array() {
+                for m in data_array {
+                    if let Some(id) = m["id"].as_str() {
+                        models.push(id.to_string());
+                    }
+                }
+            }
+        }
+        ApiProvider::Gemini => {
+            if let Some(models_array) = data["models"].as_array() {
+                for m in models_array {
+                    if let Some(name) = m["name"].as_str() {
+                        // Gemini returns "models/gemini-pro", we want just "gemini-pro"
+                        let name = name.strip_prefix("models/").unwrap_or(name);
+                        models.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    models.sort();
+    Ok(models)
 }
 
 fn convert_matches_to_suggestions(text: &str, matches: Vec<LlmMatch>) -> Vec<Suggestion> {
@@ -307,6 +421,7 @@ fn convert_matches_to_suggestions(text: &str, matches: Vec<LlmMatch>) -> Vec<Sug
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::suggestion::Severity;
 
     #[test]
     fn test_normal_suggestion() {

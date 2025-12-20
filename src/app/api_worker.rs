@@ -18,6 +18,11 @@ pub(super) enum ApiJob {
     TestConnection {
         api_key: String,
         provider: ApiProvider,
+        model: String,
+    },
+    FetchModels {
+        api_key: String,
+        provider: ApiProvider,
     },
 }
 
@@ -43,6 +48,13 @@ pub(super) enum ApiResponse {
     TestError {
         message: String,
         request_id: u64,
+    },
+    ModelsSuccess {
+        models: Vec<String>,
+        provider: ApiProvider,
+    },
+    ModelsError {
+        message: String,
     },
 }
 
@@ -82,16 +94,32 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                             });
                         }
                     },
-                    ApiJob::TestConnection { api_key, provider } => {
-                        match api::test_connection(api_key, provider, request_id).await {
-                            Ok(req_id) => {
-                                let _ = tx.send(ApiResponse::TestSuccess { request_id: req_id });
+                    ApiJob::TestConnection {
+                        api_key,
+                        provider,
+                        model,
+                    } => match api::test_connection(api_key, provider, model, request_id).await {
+                        Ok(req_id) => {
+                            let _ = tx.send(ApiResponse::TestSuccess { request_id: req_id });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(ApiResponse::TestError {
+                                message: e,
+                                request_id,
+                            });
+                        }
+                    },
+                    ApiJob::FetchModels { api_key, provider } => {
+                        let provider_clone = provider.clone();
+                        match api::fetch_models(provider, api_key).await {
+                            Ok(models) => {
+                                let _ = tx.send(ApiResponse::ModelsSuccess {
+                                    models,
+                                    provider: provider_clone,
+                                });
                             }
                             Err(e) => {
-                                let _ = tx.send(ApiResponse::TestError {
-                                    message: e,
-                                    request_id,
-                                });
+                                let _ = tx.send(ApiResponse::ModelsError { message: e });
                             }
                         }
                     }

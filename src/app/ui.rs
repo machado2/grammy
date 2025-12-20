@@ -366,32 +366,44 @@ fn settings_content(state: &State) -> Element<'_, Message> {
             state.temp_provider == ApiProvider::OpenRouter,
             Message::SelectProvider(ApiProvider::OpenRouter),
         ),
+        provider_button(
+            "Gemini",
+            state.temp_provider == ApiProvider::Gemini,
+            Message::SelectProvider(ApiProvider::Gemini),
+        ),
     ]
     .spacing(12);
 
-    let api_key_value = if state.temp_provider == ApiProvider::OpenAI {
-        state.temp_openai_api_key.clone()
-    } else {
-        state.temp_openrouter_api_key.clone()
-    };
-
-    let api_key_input: Element<'_, Message> = if state.temp_provider == ApiProvider::OpenAI {
-        text_input("sk-...", &api_key_value)
+    let api_key_input: Element<'_, Message> = match state.temp_provider {
+        ApiProvider::OpenAI => text_input("sk-...", &state.temp_openai_api_key)
             .secure(!state.show_api_key)
             .on_input(Message::TempOpenAiKeyChanged)
             .style(style_text_input)
-            .into()
-    } else {
-        text_input("sk-or-...", &api_key_value)
+            .into(),
+        ApiProvider::OpenRouter => text_input("sk-or-...", &state.temp_openrouter_api_key)
             .secure(!state.show_api_key)
             .on_input(Message::TempOpenRouterKeyChanged)
             .style(style_text_input)
-            .into()
+            .into(),
+        ApiProvider::Gemini => text_input("AIza...", &state.temp_gemini_api_key)
+            .secure(!state.show_api_key)
+            .on_input(Message::TempGeminiKeyChanged)
+            .style(style_text_input)
+            .into(),
     };
 
-    let model_input = text_input("Model", &state.temp_model)
-        .on_input(Message::TempModelChanged)
-        .style(style_text_input);
+    let model_input = iced::widget::combo_box(
+        &state.model_combo_state,
+        "Select a model...",
+        if state.temp_model.is_empty() {
+            None
+        } else {
+            Some(&state.temp_model)
+        },
+        Message::ModelSelected,
+    )
+    .width(Fill)
+    .padding(Padding::new(10.0));
 
     let test_button = button(text(if state.is_testing {
         "Testing..."
@@ -454,7 +466,7 @@ fn settings_content(state: &State) -> Element<'_, Message> {
             .style(|_t| iced::widget::text::Style {
                 color: Some(COL_TEXT)
             }),
-        iced::widget::Space::new().height(4.0),
+        iced::widget::Space::new().height(12.0),
         text("API Provider")
             .size(14)
             .style(|_t| iced::widget::text::Style {
@@ -482,11 +494,7 @@ fn settings_content(state: &State) -> Element<'_, Message> {
             }),
         model_input,
         iced::widget::Space::new().height(4.0),
-        text("Auto-check Delay")
-            .size(14)
-            .style(|_t| iced::widget::text::Style {
-                color: Some(COL_TEXT)
-            }),
+        text("Auto-check Delay").size(14).color(COL_TEXT),
         debounce_slider,
         iced::widget::Space::new().height(4.0),
         test_button,
