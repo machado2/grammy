@@ -1,30 +1,35 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use grammy::app;
+use eframe::egui;
+use grammy::app::App;
 
-use iced::window;
-use iced::Size;
+fn main() -> Result<(), eframe::Error> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1200.0, 800.0])
+            .with_min_inner_size([800.0, 600.0])
+            .with_icon(load_icon()),
+        ..Default::default()
+    };
 
-fn main() -> iced::Result {
-    iced::application(app::new, app::update, app::view)
-        .title("Grammy")
-        .theme(app::theme)
-        .subscription(app::subscription)
-        .window(window::Settings {
-            size: Size::new(1200.0, 800.0),
-            min_size: Some(Size::new(800.0, 600.0)),
-            exit_on_close_request: false,
-            icon: load_icon(),
-            ..Default::default()
-        })
-        .settings(app::settings())
-        .run()
+    eframe::run_native(
+        "Grammy",
+        options,
+        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+    )
 }
 
-fn load_icon() -> Option<iced::window::Icon> {
+fn load_icon() -> egui::IconData {
+    // Load icon for the window
     let bytes = include_bytes!("../assets/icon.png");
-    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let img = image::load_from_memory(bytes)
+        .expect("Failed to load icon")
+        .to_rgba8();
+
     let (width, height) = img.dimensions();
-    let rgba = img.into_raw();
-    iced::window::icon::from_rgba(rgba, width, height).ok()
+    egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    }
 }

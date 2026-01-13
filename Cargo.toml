@@ -6,15 +6,21 @@ description = "A grammar checking desktop app powered by OpenAI"
 authors = ["Grammy"]
 
 [dependencies]
-iced = { version = "0.14", features = ["tokio", "advanced"] }
+egui = "0.30"
+eframe = { version = "0.30", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "persistence",
+] }
+egui_extras = { version = "0.30", default-features = false, features = ["file"] }
 reqwest = { version = "0.12", features = ["json"] }
+image = "0.24"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 uuid = { version = "1.0", features = ["v4"] }
 directories = "5.0"
 confy = "0.6"
-image = "0.24"
 
 [build-dependencies]
 embed-manifest = "1"
