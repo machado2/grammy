@@ -24,6 +24,8 @@ pub enum Message {
     WindowCloseRequested(window::Id),
 
     EditorAction(text_editor::Action),
+    Undo,
+    Redo,
     ApplySuggestion(String),
     DismissSuggestion(String),
     HoverSuggestion(String),
@@ -51,6 +53,8 @@ pub struct State {
     pub(super) editor: text_editor::Content,
     pub(super) last_checked_text: String,
     pub(super) suggestions: Vec<Suggestion>,
+    pub(super) undo_stack: Vec<EditorSnapshot>,
+    pub(super) redo_stack: Vec<EditorSnapshot>,
 
     pub(super) draft_dirty: bool,
 
@@ -109,6 +113,8 @@ pub fn new() -> (State, Task<Message>) {
             editor,
             last_checked_text: String::new(),
             suggestions: Vec::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
 
             draft_dirty: false,
 
@@ -171,11 +177,17 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 
         Message::EditorAction(action) => {
             let old_text = state.editor.text();
+            let old_cursor = state.editor.cursor();
             state.editor.perform(action);
             let new_text = state.editor.text();
 
             // Only clear suggestions if text actually changed
             if old_text != new_text {
+                state.undo_stack.push(EditorSnapshot {
+                    text: old_text,
+                    cursor: old_cursor,
+                });
+                state.redo_stack.clear();
                 state.suggestions.clear();
                 state.hovered_suggestion = None;
                 state.last_edit_time = Some(Instant::now());
@@ -187,10 +199,62 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             Task::none()
         }
 
+        Message::Undo => {
+            let current_snapshot = EditorSnapshot {
+                text: state.editor.text(),
+                cursor: state.editor.cursor(),
+            };
+            let old_text = current_snapshot.text.clone();
+
+            if let Some(previous) = state.undo_stack.pop() {
+                state.redo_stack.push(current_snapshot);
+                restore_snapshot(state, previous);
+                if state.editor.text() != old_text {
+                    state.suggestions.clear();
+                    state.hovered_suggestion = None;
+                    state.last_edit_time = Some(Instant::now());
+                    state.draft_dirty = true;
+                    if state.is_checking {
+                        state.pending_recheck = true;
+                    }
+                }
+            }
+            Task::none()
+        }
+
+        Message::Redo => {
+            let current_snapshot = EditorSnapshot {
+                text: state.editor.text(),
+                cursor: state.editor.cursor(),
+            };
+            let old_text = current_snapshot.text.clone();
+
+            if let Some(next) = state.redo_stack.pop() {
+                state.undo_stack.push(current_snapshot);
+                restore_snapshot(state, next);
+                if state.editor.text() != old_text {
+                    state.suggestions.clear();
+                    state.hovered_suggestion = None;
+                    state.last_edit_time = Some(Instant::now());
+                    state.draft_dirty = true;
+                    if state.is_checking {
+                        state.pending_recheck = true;
+                    }
+                }
+            }
+            Task::none()
+        }
+
         Message::ApplySuggestion(id) => {
             let old_text = state.editor.text();
+            let old_cursor = state.editor.cursor();
             apply_suggestion(state, &id);
             if state.editor.text() != old_text {
+                state.undo_stack.push(EditorSnapshot {
+                    text: old_text,
+                    cursor: old_cursor,
+                });
+                state.redo_stack.clear();
                 state.draft_dirty = true;
             }
             Task::none()
@@ -667,4 +731,15 @@ fn apply_suggestion(state: &mut State, suggestion_id: &str) {
     } else {
         state.status = format!("{} suggestion(s)", state.suggestions.len());
     }
+}
+
+#[derive(Debug, Clone)]
+struct EditorSnapshot {
+    text: String,
+    cursor: text_editor::Cursor,
+}
+
+fn restore_snapshot(state: &mut State, snapshot: EditorSnapshot) {
+    state.editor = text_editor::Content::with_text(&snapshot.text);
+    state.editor.move_to(snapshot.cursor);
 }

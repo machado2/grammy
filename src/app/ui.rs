@@ -109,6 +109,33 @@ fn editor(state: &State) -> Element<'_, Message> {
 
     let editor = text_editor(&state.editor)
         .placeholder("Paste or type here...")
+        .key_binding(|key_press| {
+            let modifiers = key_press.modifiers;
+            let key = key_press.key.as_ref();
+
+            if modifiers.command() && !modifiers.shift() {
+                if matches!(key, iced::keyboard::Key::Character("z")) {
+                    return Some(iced::widget::text_editor::Binding::Custom(
+                        Message::Undo,
+                    ));
+                }
+                if matches!(key, iced::keyboard::Key::Character("y")) {
+                    return Some(iced::widget::text_editor::Binding::Custom(
+                        Message::Redo,
+                    ));
+                }
+            }
+
+            if modifiers.command() && modifiers.shift() {
+                if matches!(key, iced::keyboard::Key::Character("z")) {
+                    return Some(iced::widget::text_editor::Binding::Custom(
+                        Message::Redo,
+                    ));
+                }
+            }
+
+            iced::widget::text_editor::Binding::from_key_press(key_press)
+        })
         .on_action(Message::EditorAction)
         .highlight_with::<SuggestionHighlighter>(settings, highlight::to_format)
         .height(Fill)
