@@ -25,6 +25,7 @@ pub enum Highlight {
     Warning,    // Orange - awkward phrasing
     Suggestion, // Yellow - minor improvements
     Hovered,    // Blue - currently hovered
+    Code,       // Green - inline code between backticks
 }
 
 pub fn compute_line_starts(text: &str) -> Vec<usize> {
@@ -65,6 +66,37 @@ pub fn spans_from_suggestions(suggestions: &[Suggestion], hovered_id: Option<&st
             })
         })
         .collect()
+}
+
+pub fn spans_from_backticks(text: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((start, ch)) = chars.next() {
+        if ch == '`' {
+            let code_start = start + 1;
+            let mut code_end = None;
+
+            while let Some((i, c)) = chars.next() {
+                if c == '`' {
+                    code_end = Some(i);
+                    break;
+                }
+            }
+
+            if let Some(end) = code_end {
+                if end > code_start {
+                    spans.push(Span {
+                        start: code_start,
+                        end: end,
+                        kind: Highlight::Code,
+                    });
+                }
+            }
+        }
+    }
+
+    spans
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +216,12 @@ pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
         b: 1.0,
         a: 1.0,
     }; // Blue
+    let code: Color = Color {
+        r: 0.4,
+        g: 0.9,
+        b: 0.6,
+        a: 1.0,
+    }; // Green
 
     match highlight {
         Highlight::Error => Format {
@@ -200,6 +238,10 @@ pub fn to_format(highlight: &Highlight, _theme: &Theme) -> Format<Font> {
         },
         Highlight::Hovered => Format {
             color: Some(hovered),
+            font: None,
+        },
+        Highlight::Code => Format {
+            color: Some(code),
             font: None,
         },
     }

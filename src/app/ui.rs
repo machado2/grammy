@@ -103,8 +103,9 @@ fn editor(state: &State) -> Element<'_, Message> {
 
     let full_text = state.editor.text();
     let line_starts = highlight::compute_line_starts(&full_text);
-    let spans =
+    let mut spans =
         highlight::spans_from_suggestions(&state.suggestions, state.hovered_suggestion.as_deref());
+    spans.extend(highlight::spans_from_backticks(&full_text));
     let settings = highlight::Settings { line_starts, spans };
 
     let editor = text_editor(&state.editor)
@@ -115,22 +116,16 @@ fn editor(state: &State) -> Element<'_, Message> {
 
             if modifiers.command() && !modifiers.shift() {
                 if matches!(key, iced::keyboard::Key::Character("z")) {
-                    return Some(iced::widget::text_editor::Binding::Custom(
-                        Message::Undo,
-                    ));
+                    return Some(iced::widget::text_editor::Binding::Custom(Message::Undo));
                 }
                 if matches!(key, iced::keyboard::Key::Character("y")) {
-                    return Some(iced::widget::text_editor::Binding::Custom(
-                        Message::Redo,
-                    ));
+                    return Some(iced::widget::text_editor::Binding::Custom(Message::Redo));
                 }
             }
 
             if modifiers.command() && modifiers.shift() {
                 if matches!(key, iced::keyboard::Key::Character("z")) {
-                    return Some(iced::widget::text_editor::Binding::Custom(
-                        Message::Redo,
-                    ));
+                    return Some(iced::widget::text_editor::Binding::Custom(Message::Redo));
                 }
             }
 
