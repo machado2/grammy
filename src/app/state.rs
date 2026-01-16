@@ -1,4 +1,7 @@
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::{
+    mpsc::{channel, Receiver, Sender, TryRecvError},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use iced::widget::text_editor;
@@ -9,6 +12,7 @@ use crate::suggestion::Suggestion;
 
 use super::api_worker::{spawn_api_worker, ApiJob, ApiRequest, ApiResponse};
 use super::draft;
+use super::highlight;
 use super::history::MessageHistory;
 use super::style;
 use super::ui;
@@ -51,7 +55,13 @@ pub enum Message {
 
 pub struct State {
     pub(super) editor: text_editor::Content,
-    pub(super) last_checked_text: String,
+    pub(super) editor_text: String,
+    pub(super) editor_revision: u64,
+    pub(super) highlight_line_starts: Arc<Vec<usize>>,
+    pub(super) highlight_suggestion_spans: Arc<Vec<highlight::Span>>,
+    pub(super) highlight_code_spans: Arc<Vec<highlight::Span>>,
+    pub(super) highlight_settings: highlight::Settings,
+    pub(super) last_checked_revision: Option<u64>,
     pub(super) suggestions: Vec<Suggestion>,
     pub(super) undo_stack: Vec<EditorSnapshot>,
     pub(super) redo_stack: Vec<EditorSnapshot>,
@@ -85,6 +95,7 @@ pub struct State {
     pub(super) last_edit_time: Option<Instant>,
     pub(super) is_checking: bool,
     pub(super) current_check_request_id: Option<u64>,
+    pub(super) current_check_revision: Option<u64>,
     pub(super) pending_recheck: bool,
     pub(super) pending_check_text: Option<String>,
 
@@ -102,16 +113,32 @@ pub fn new() -> (State, Task<Message>) {
     spawn_api_worker(request_rx, response_tx);
 
     let draft = draft::load();
+    let editor_text = draft.text.clone();
     let editor = if draft.text.is_empty() {
         text_editor::Content::new()
     } else {
         text_editor::Content::with_text(&draft.text)
     };
 
+    let highlight_line_starts = Arc::new(highlight::compute_line_starts(&editor_text));
+    let highlight_code_spans = Arc::new(highlight::spans_from_backticks(&editor_text));
+    let highlight_suggestion_spans = Arc::new(Vec::new());
+    let highlight_settings = highlight::Settings {
+        line_starts: highlight_line_starts.clone(),
+        suggestion_spans: highlight_suggestion_spans.clone(),
+        code_spans: highlight_code_spans.clone(),
+    };
+
     (
         State {
             editor,
-            last_checked_text: String::new(),
+            editor_text,
+            editor_revision: 0,
+            highlight_line_starts,
+            highlight_suggestion_spans,
+            highlight_code_spans,
+            highlight_settings,
+            last_checked_revision: None,
             suggestions: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -141,6 +168,7 @@ pub fn new() -> (State, Task<Message>) {
             last_edit_time: None,
             is_checking: false,
             current_check_request_id: None,
+            current_check_revision: None,
             pending_recheck: false,
             pending_check_text: None,
             message_history: MessageHistory::default(),
@@ -161,7 +189,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 
         Message::AutosaveTick => {
             if state.draft_dirty {
-                draft::save_text(state.editor.text());
+                draft::save_text(state.editor_text.clone());
                 state.draft_dirty = false;
             }
             Task::none()
@@ -169,14 +197,14 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 
         Message::WindowCloseRequested(id) => {
             if state.draft_dirty {
-                draft::save_text(state.editor.text());
+                draft::save_text(state.editor_text.clone());
                 state.draft_dirty = false;
             }
             window::close(id)
         }
 
         Message::EditorAction(action) => {
-            let old_text = state.editor.text();
+            let old_text = state.editor_text.clone();
             let old_cursor = state.editor.cursor();
             state.editor.perform(action);
             let new_text = state.editor.text();
@@ -190,6 +218,11 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.redo_stack.clear();
                 state.suggestions.clear();
                 state.hovered_suggestion = None;
+                state.editor_text = new_text;
+                state.editor_revision = state.editor_revision.wrapping_add(1);
+                rebuild_text_highlight_cache(state);
+                rebuild_suggestion_highlight_cache(state);
+                refresh_highlight_settings(state);
                 state.last_edit_time = Some(Instant::now());
                 state.draft_dirty = true;
                 if state.is_checking {
@@ -201,7 +234,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 
         Message::Undo => {
             let current_snapshot = EditorSnapshot {
-                text: state.editor.text(),
+                text: state.editor_text.clone(),
                 cursor: state.editor.cursor(),
             };
             let old_text = current_snapshot.text.clone();
@@ -209,9 +242,11 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(previous) = state.undo_stack.pop() {
                 state.redo_stack.push(current_snapshot);
                 restore_snapshot(state, previous);
-                if state.editor.text() != old_text {
+                if state.editor_text != old_text {
                     state.suggestions.clear();
                     state.hovered_suggestion = None;
+                    rebuild_suggestion_highlight_cache(state);
+                    refresh_highlight_settings(state);
                     state.last_edit_time = Some(Instant::now());
                     state.draft_dirty = true;
                     if state.is_checking {
@@ -224,7 +259,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 
         Message::Redo => {
             let current_snapshot = EditorSnapshot {
-                text: state.editor.text(),
+                text: state.editor_text.clone(),
                 cursor: state.editor.cursor(),
             };
             let old_text = current_snapshot.text.clone();
@@ -232,9 +267,11 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(next) = state.redo_stack.pop() {
                 state.undo_stack.push(current_snapshot);
                 restore_snapshot(state, next);
-                if state.editor.text() != old_text {
+                if state.editor_text != old_text {
                     state.suggestions.clear();
                     state.hovered_suggestion = None;
+                    rebuild_suggestion_highlight_cache(state);
+                    refresh_highlight_settings(state);
                     state.last_edit_time = Some(Instant::now());
                     state.draft_dirty = true;
                     if state.is_checking {
@@ -246,10 +283,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         }
 
         Message::ApplySuggestion(id) => {
-            let old_text = state.editor.text();
+            let old_text = state.editor_text.clone();
             let old_cursor = state.editor.cursor();
             apply_suggestion(state, &id);
-            if state.editor.text() != old_text {
+            if state.editor_text != old_text {
                 state.undo_stack.push(EditorSnapshot {
                     text: old_text,
                     cursor: old_cursor,
@@ -265,6 +302,8 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.hovered_suggestion.as_deref() == Some(id.as_str()) {
                 state.hovered_suggestion = None;
             }
+            rebuild_suggestion_highlight_cache(state);
+            refresh_highlight_settings(state);
 
             if !state.is_checking {
                 if state.suggestions.is_empty() {
@@ -279,11 +318,15 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 
         Message::HoverSuggestion(id) => {
             state.hovered_suggestion = Some(id);
+            rebuild_suggestion_highlight_cache(state);
+            refresh_highlight_settings(state);
             Task::none()
         }
 
         Message::ClearHoverSuggestion => {
             state.hovered_suggestion = None;
+            rebuild_suggestion_highlight_cache(state);
+            refresh_highlight_settings(state);
             Task::none()
         }
 
@@ -294,7 +337,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
 
-            state.last_checked_text.clear();
+            state.last_checked_revision = None;
             check_text(state);
             Task::none()
         }
@@ -421,12 +464,22 @@ pub fn theme(state: &State) -> Theme {
     style::theme(state)
 }
 
-pub fn subscription(_state: &State) -> Subscription<Message> {
-    Subscription::batch([
-        iced::time::every(Duration::from_millis(TICK_MS)).map(|_| Message::Tick),
-        iced::time::every(Duration::from_secs(AUTOSAVE_SECS)).map(|_| Message::AutosaveTick),
-        window::close_requests().map(Message::WindowCloseRequested),
-    ])
+pub fn subscription(state: &State) -> Subscription<Message> {
+    let needs_tick = state.last_edit_time.is_some()
+        || state.is_checking
+        || state.is_testing
+        || state.show_settings;
+
+    let mut subs = Vec::new();
+
+    if needs_tick {
+        subs.push(iced::time::every(Duration::from_millis(TICK_MS)).map(|_| Message::Tick));
+    }
+
+    subs.push(iced::time::every(Duration::from_secs(AUTOSAVE_SECS)).map(|_| Message::AutosaveTick));
+    subs.push(window::close_requests().map(Message::WindowCloseRequested));
+
+    Subscription::batch(subs)
 }
 
 pub fn settings() -> iced::Settings {
@@ -455,19 +508,23 @@ fn tick_debounce(state: &mut State) {
 }
 
 fn check_text(state: &mut State) {
-    let text = state.editor.text();
+    let text = state.editor_text.clone();
 
     if text.trim().is_empty() {
         state.suggestions.clear();
         state.hovered_suggestion = None;
+        rebuild_suggestion_highlight_cache(state);
+        refresh_highlight_settings(state);
         state.status = "Ready".to_string();
-        state.last_checked_text = text;
+        state.last_checked_revision = Some(state.editor_revision);
         state.is_checking = false;
         state.current_check_request_id = None;
+        state.current_check_revision = None;
+        state.pending_check_text = None;
         return;
     }
 
-    if text == state.last_checked_text {
+    if state.last_checked_revision == Some(state.editor_revision) {
         return;
     }
 
@@ -480,11 +537,14 @@ fn check_text(state: &mut State) {
 
     state.is_checking = true;
     state.current_check_request_id = Some(request_id);
+    state.current_check_revision = Some(state.editor_revision);
     state.status = "Checking...".to_string();
 
     state.suggestions.clear();
     state.hovered_suggestion = None;
-    state.last_checked_text = text.clone();
+    rebuild_suggestion_highlight_cache(state);
+    refresh_highlight_settings(state);
+    state.last_checked_revision = Some(state.editor_revision);
 
     let request = ApiRequest {
         job: ApiJob::Grammar {
@@ -509,6 +569,8 @@ fn check_text(state: &mut State) {
         state.status = format!("Internal error: failed to send request ({})", e);
         state.is_checking = false;
         state.current_check_request_id = None;
+        state.current_check_revision = None;
+        state.last_checked_revision = None;
     }
 }
 
@@ -524,8 +586,29 @@ fn process_api_responses(state: &mut State) {
                         continue;
                     }
 
+                    // If text changed since the request was sent, drop this response.
+                    if state.current_check_revision != Some(state.editor_revision) {
+                        state.is_checking = false;
+                        state.current_check_request_id = None;
+                        state.current_check_revision = None;
+                        state.pending_check_text = None;
+
+                        if state.pending_recheck {
+                            state.status = "Rechecking...".to_string();
+                            let delay = state.config.debounce_ms;
+                            if delay <= 5000 {
+                                state.last_edit_time =
+                                    Some(Instant::now() - Duration::from_millis(delay));
+                            } else {
+                                state.pending_recheck = false;
+                            }
+                        }
+                        continue;
+                    }
+
                     state.is_checking = false;
                     state.current_check_request_id = None;
+                    state.current_check_revision = None;
 
                     // Save to history for cycle prevention
                     if let Some(user_text) = state.pending_check_text.take() {
@@ -551,6 +634,8 @@ fn process_api_responses(state: &mut State) {
                     }
 
                     state.suggestions = suggestions;
+                    rebuild_suggestion_highlight_cache(state);
+                    refresh_highlight_settings(state);
                     if state.suggestions.is_empty() {
                         state.status = "All good!".to_string();
                     } else {
@@ -575,8 +660,29 @@ fn process_api_responses(state: &mut State) {
                         continue;
                     }
 
+                    // If text changed since the request was sent, drop this error.
+                    if state.current_check_revision != Some(state.editor_revision) {
+                        state.is_checking = false;
+                        state.current_check_request_id = None;
+                        state.current_check_revision = None;
+                        state.pending_check_text = None;
+
+                        if state.pending_recheck {
+                            state.status = "Rechecking...".to_string();
+                            let delay = state.config.debounce_ms;
+                            if delay <= 5000 {
+                                state.last_edit_time =
+                                    Some(Instant::now() - Duration::from_millis(delay));
+                            } else {
+                                state.pending_recheck = false;
+                            }
+                        }
+                        continue;
+                    }
+
                     state.is_checking = false;
                     state.current_check_request_id = None;
+                    state.current_check_revision = None;
                     state.status = message;
 
                     if state.pending_recheck {
@@ -679,6 +785,26 @@ fn fetch_models_if_needed(state: &mut State) {
     let _ = state.api_sender.send(request);
 }
 
+fn rebuild_text_highlight_cache(state: &mut State) {
+    state.highlight_line_starts = Arc::new(highlight::compute_line_starts(&state.editor_text));
+    state.highlight_code_spans = Arc::new(highlight::spans_from_backticks(&state.editor_text));
+}
+
+fn rebuild_suggestion_highlight_cache(state: &mut State) {
+    state.highlight_suggestion_spans = Arc::new(highlight::spans_from_suggestions(
+        &state.suggestions,
+        state.hovered_suggestion.as_deref(),
+    ));
+}
+
+fn refresh_highlight_settings(state: &mut State) {
+    state.highlight_settings = highlight::Settings {
+        line_starts: state.highlight_line_starts.clone(),
+        suggestion_spans: state.highlight_suggestion_spans.clone(),
+        code_spans: state.highlight_code_spans.clone(),
+    };
+}
+
 fn apply_suggestion(state: &mut State, suggestion_id: &str) {
     let suggestion = state
         .suggestions
@@ -690,7 +816,7 @@ fn apply_suggestion(state: &mut State, suggestion_id: &str) {
         return;
     };
 
-    let text = state.editor.text();
+    let text = state.editor_text.as_str();
     let start = suggestion.offset;
     let end = suggestion.offset + suggestion.length;
 
@@ -724,7 +850,12 @@ fn apply_suggestion(state: &mut State, suggestion_id: &str) {
     }
 
     state.editor = text_editor::Content::with_text(&new_text);
-    state.last_checked_text = new_text;
+    state.editor_text = new_text;
+    state.editor_revision = state.editor_revision.wrapping_add(1);
+    rebuild_text_highlight_cache(state);
+    rebuild_suggestion_highlight_cache(state);
+    refresh_highlight_settings(state);
+    state.last_checked_revision = Some(state.editor_revision);
 
     if state.suggestions.is_empty() {
         state.status = "All good!".to_string();
@@ -740,6 +871,11 @@ struct EditorSnapshot {
 }
 
 fn restore_snapshot(state: &mut State, snapshot: EditorSnapshot) {
-    state.editor = text_editor::Content::with_text(&snapshot.text);
-    state.editor.move_to(snapshot.cursor);
+    let EditorSnapshot { text, cursor } = snapshot;
+    state.editor = text_editor::Content::with_text(&text);
+    state.editor.move_to(cursor);
+    state.editor_text = text;
+    state.editor_revision = state.editor_revision.wrapping_add(1);
+    rebuild_text_highlight_cache(state);
+    refresh_highlight_settings(state);
 }

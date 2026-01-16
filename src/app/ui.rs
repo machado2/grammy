@@ -101,12 +101,7 @@ fn editor(state: &State) -> Element<'_, Message> {
             color: Some(COL_MUTED),
         });
 
-    let full_text = state.editor.text();
-    let line_starts = highlight::compute_line_starts(&full_text);
-    let mut spans =
-        highlight::spans_from_suggestions(&state.suggestions, state.hovered_suggestion.as_deref());
-    spans.extend(highlight::spans_from_backticks(&full_text));
-    let settings = highlight::Settings { line_starts, spans };
+    let settings = state.highlight_settings.clone();
 
     let editor = text_editor(&state.editor)
         .placeholder("Paste or type here...")

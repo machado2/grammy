@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::sync::Arc;
 
 use iced::advanced::text::highlighter::Format;
 use iced::advanced::text::Highlighter;
@@ -13,10 +14,19 @@ pub struct Span {
     pub kind: Highlight,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Settings {
-    pub line_starts: Vec<usize>,
-    pub spans: Vec<Span>,
+    pub line_starts: Arc<Vec<usize>>,
+    pub suggestion_spans: Arc<Vec<Span>>,
+    pub code_spans: Arc<Vec<Span>>,
+}
+
+impl PartialEq for Settings {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.line_starts, &other.line_starts)
+            && Arc::ptr_eq(&self.suggestion_spans, &other.suggestion_spans)
+            && Arc::ptr_eq(&self.code_spans, &other.code_spans)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,7 +164,12 @@ impl Highlighter for SuggestionHighlighter {
 
         // Find spans that overlap this line
         let mut relevant_spans: Vec<(usize, usize, Highlight)> = Vec::new();
-        for span in &self.settings.spans {
+        for span in self
+            .settings
+            .suggestion_spans
+            .iter()
+            .chain(self.settings.code_spans.iter())
+        {
             if span.end <= start_offset || span.start >= line_end {
                 continue;
             }
