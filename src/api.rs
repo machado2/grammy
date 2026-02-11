@@ -40,6 +40,7 @@ IMPORTANT: The "original" field must contain the EXACT substring from the input 
 If there is nothing to change, return {"matches": []}."#;
 
 pub async fn check_grammar(
+    client: &reqwest::Client,
     text: String,
     api_key: String,
     model: String,
@@ -64,11 +65,6 @@ pub async fn check_grammar(
         eprintln!("[DEBUG #{request_id}] Empty text, returning no suggestions");
         return Ok((vec![], request_id));
     }
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     // Build messages array: system prompt + history + current user message
     let mut messages = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
@@ -115,11 +111,16 @@ pub async fn check_grammar(
         });
         request = request.json(&body);
     } else {
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": messages,
             "response_format": { "type": "json_object" }
         });
+        if provider == ApiProvider::OpenRouter {
+            // OpenRouter provider routing: prioritize lowest-latency provider endpoint.
+            // Docs: https://openrouter.ai/docs/features/provider-routing
+            body["provider"] = json!({ "sort": "latency" });
+        }
         request = request
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&body);
@@ -203,6 +204,7 @@ pub fn next_request_id() -> u64 {
 }
 
 pub async fn test_connection(
+    client: &reqwest::Client,
     api_key: String,
     provider: ApiProvider,
     model: String,
@@ -219,11 +221,6 @@ pub async fn test_connection(
         eprintln!("[DEBUG #{request_id}] Error: API key not set");
         return Err("API key not set. Click ⚙ to configure.".to_string());
     }
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     let (url, is_post) = match provider {
         ApiProvider::OpenAI => ("https://api.openai.com/v1/models".to_string(), false),
@@ -292,7 +289,7 @@ pub async fn test_connection(
 
     // If we're here, connection is OK. Now validate model if provided and not Gemini (which lists models already)
     // Actually, let's just check if the model is in the list of models for the provider.
-    let models = fetch_models(provider.clone(), api_key).await?;
+    let models = fetch_models(client, provider.clone(), api_key).await?;
     if !model.is_empty() && !models.iter().any(|m| m == &model) {
         return Err(format!(
             "Model '{}' not found for {}",
@@ -308,12 +305,10 @@ pub async fn test_connection(
     Ok(request_id)
 }
 
-pub async fn fetch_models(provider: ApiProvider, api_key: String) -> Result<Vec<String>, String> {
+pub async fn fetch_models(client: &reqwest::Client, provider: ApiProvider, api_key: String) -> Result<Vec<String>, String> {
     if api_key.is_empty() {
         return Ok(vec![]);
     }
-
-    let client = reqwest::Client::new();
     let url = match provider {
         ApiProvider::OpenAI => "https://api.openai.com/v1/models".to_string(),
         ApiProvider::OpenRouter => "https://openrouter.ai/api/v1/models".to_string(),

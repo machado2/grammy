@@ -20,6 +20,13 @@ use super::ui;
 // DEBOUNCE_MS removed, using config instead
 const TICK_MS: u64 = 50;
 const AUTOSAVE_SECS: u64 = 30;
+const MODELS_FETCH_DEBOUNCE_MS: u64 = 400;
+const HISTORY_MAX_CHARS: usize = 8_000;
+const HISTORY_MAX_MATCHES: usize = 20;
+const HISTORY_MAX_EXCERPTS: usize = 8;
+const HISTORY_FIELD_MAX_CHARS: usize = 200;
+const HISTORY_EXCERPT_MAX_CHARS: usize = 220;
+const HISTORY_NO_SUGGESTIONS_MAX_CHARS: usize = 800;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -88,6 +95,14 @@ pub struct State {
     pub(super) gemini_models: Vec<String>,
     pub(super) model_combo_state: iced::widget::combo_box::State<String>,
 
+    pub(super) models_fetch_debounce_start: Option<Instant>,
+    pub(super) openai_models_loaded_for_key: Option<String>,
+    pub(super) openrouter_models_loaded_for_key: Option<String>,
+    pub(super) gemini_models_loaded_for_key: Option<String>,
+    pub(super) openai_models_request_id: Option<u64>,
+    pub(super) openrouter_models_request_id: Option<u64>,
+    pub(super) gemini_models_request_id: Option<u64>,
+
     pub(super) test_status: String,
     pub(super) is_testing: bool,
     pub(super) current_test_request_id: Option<u64>,
@@ -96,7 +111,6 @@ pub struct State {
     pub(super) is_checking: bool,
     pub(super) current_check_request_id: Option<u64>,
     pub(super) current_check_revision: Option<u64>,
-    pub(super) pending_recheck: bool,
     pub(super) pending_check_text: Option<String>,
 
     pub(super) message_history: MessageHistory,
@@ -162,6 +176,14 @@ pub fn new() -> (State, Task<Message>) {
             gemini_models: Vec::new(),
             model_combo_state: iced::widget::combo_box::State::new(Vec::new()),
 
+            models_fetch_debounce_start: None,
+            openai_models_loaded_for_key: None,
+            openrouter_models_loaded_for_key: None,
+            gemini_models_loaded_for_key: None,
+            openai_models_request_id: None,
+            openrouter_models_request_id: None,
+            gemini_models_request_id: None,
+
             test_status: String::new(),
             is_testing: false,
             current_test_request_id: None,
@@ -169,7 +191,6 @@ pub fn new() -> (State, Task<Message>) {
             is_checking: false,
             current_check_request_id: None,
             current_check_revision: None,
-            pending_recheck: false,
             pending_check_text: None,
             message_history: MessageHistory::default(),
             api_sender: request_tx,
@@ -184,6 +205,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Tick => {
             process_api_responses(state);
             tick_debounce(state);
+            tick_models_fetch_debounce(state);
             Task::none()
         }
 
@@ -226,7 +248,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.last_edit_time = Some(Instant::now());
                 state.draft_dirty = true;
                 if state.is_checking {
-                    state.pending_recheck = true;
+                    cancel_inflight_grammar_check(state);
                 }
             }
             Task::none()
@@ -250,7 +272,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.last_edit_time = Some(Instant::now());
                     state.draft_dirty = true;
                     if state.is_checking {
-                        state.pending_recheck = true;
+                        cancel_inflight_grammar_check(state);
                     }
                 }
             }
@@ -275,7 +297,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.last_edit_time = Some(Instant::now());
                     state.draft_dirty = true;
                     if state.is_checking {
-                        state.pending_recheck = true;
+                        cancel_inflight_grammar_check(state);
                     }
                 }
             }
@@ -331,12 +353,6 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         }
 
         Message::ForceCheck => {
-            if state.is_checking {
-                state.pending_recheck = true;
-                state.status = "Rechecking...".to_string();
-                return Task::none();
-            }
-
             state.last_checked_revision = None;
             check_text(state);
             Task::none()
@@ -352,6 +368,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.show_api_key = false;
             state.test_status.clear();
             state.show_settings = true;
+            state.models_fetch_debounce_start = None;
 
             // Trigger model fetching for current provider
             fetch_models_if_needed(state);
@@ -359,6 +376,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::CloseSettings => {
             state.show_settings = false;
+            state.models_fetch_debounce_start = None;
             Task::none()
         }
         Message::ToggleShowApiKey => {
@@ -371,23 +389,27 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.temp_model = state.temp_provider.default_model().to_string();
             state.test_status.clear();
             state.show_api_key = false;
+            state.models_fetch_debounce_start = None;
             fetch_models_if_needed(state);
             Task::none()
         }
 
         Message::TempOpenAiKeyChanged(v) => {
             state.temp_openai_api_key = v;
-            fetch_models_if_needed(state);
+            invalidate_models_cache_for_provider(state, ApiProvider::OpenAI);
+            schedule_models_fetch(state);
             Task::none()
         }
         Message::TempOpenRouterKeyChanged(v) => {
             state.temp_openrouter_api_key = v;
-            fetch_models_if_needed(state);
+            invalidate_models_cache_for_provider(state, ApiProvider::OpenRouter);
+            schedule_models_fetch(state);
             Task::none()
         }
         Message::TempGeminiKeyChanged(v) => {
             state.temp_gemini_api_key = v;
-            fetch_models_if_needed(state);
+            invalidate_models_cache_for_provider(state, ApiProvider::Gemini);
+            schedule_models_fetch(state);
             Task::none()
         }
         Message::TempModelChanged(v) => {
@@ -416,6 +438,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.config.debounce_ms = state.temp_debounce_ms as u64;
             state.config.save();
             state.show_settings = false;
+            state.models_fetch_debounce_start = None;
             state.status = "Settings saved".to_string();
             Task::none()
         }
@@ -511,25 +534,17 @@ fn check_text(state: &mut State) {
     let text = state.editor_text.clone();
 
     if text.trim().is_empty() {
+        cancel_inflight_grammar_check(state);
         state.suggestions.clear();
         state.hovered_suggestion = None;
         rebuild_suggestion_highlight_cache(state);
         refresh_highlight_settings(state);
         state.status = "Ready".to_string();
         state.last_checked_revision = Some(state.editor_revision);
-        state.is_checking = false;
-        state.current_check_request_id = None;
-        state.current_check_revision = None;
-        state.pending_check_text = None;
         return;
     }
 
     if state.last_checked_revision == Some(state.editor_revision) {
-        return;
-    }
-
-    if state.is_checking {
-        state.pending_recheck = true;
         return;
     }
 
@@ -554,7 +569,7 @@ fn check_text(state: &mut State) {
             provider: state.config.provider.clone(),
             history: state
                 .message_history
-                .get_entries()
+                .get_entries_limited_pairs(HISTORY_MAX_CHARS)
                 .into_iter()
                 .cloned()
                 .collect(),
@@ -592,17 +607,6 @@ fn process_api_responses(state: &mut State) {
                         state.current_check_request_id = None;
                         state.current_check_revision = None;
                         state.pending_check_text = None;
-
-                        if state.pending_recheck {
-                            state.status = "Rechecking...".to_string();
-                            let delay = state.config.debounce_ms;
-                            if delay <= 5000 {
-                                state.last_edit_time =
-                                    Some(Instant::now() - Duration::from_millis(delay));
-                            } else {
-                                state.pending_recheck = false;
-                            }
-                        }
                         continue;
                     }
 
@@ -612,25 +616,9 @@ fn process_api_responses(state: &mut State) {
 
                     // Save to history for cycle prevention
                     if let Some(user_text) = state.pending_check_text.take() {
-                        // Format LLM response as JSON for history context
-                        let assistant_content = if suggestions.is_empty() {
-                            r#"{"matches":[]}"#.to_string()
-                        } else {
-                            serde_json::to_string(&serde_json::json!({
-                                "matches": suggestions.iter().map(|s| {
-                                    serde_json::json!({
-                                        "message": s.message,
-                                        "original": s.original,
-                                        "replacement": s.replacement,
-                                        "severity": format!("{:?}", s.severity).to_lowercase()
-                                    })
-                                }).collect::<Vec<_>>()
-                            }))
-                            .unwrap_or_else(|_| r#"{"matches":[]}"#.to_string())
-                        };
-                        state
-                            .message_history
-                            .push_pair(format!("Text:\n{}", user_text), assistant_content);
+                        let user_content = build_history_user_content(&user_text, &suggestions);
+                        let assistant_content = build_history_assistant_content(&suggestions);
+                        state.message_history.push_pair(user_content, assistant_content);
                     }
 
                     state.suggestions = suggestions;
@@ -640,16 +628,6 @@ fn process_api_responses(state: &mut State) {
                         state.status = "All good!".to_string();
                     } else {
                         state.status = format!("{} suggestion(s)", state.suggestions.len());
-                    }
-
-                    if state.pending_recheck {
-                        let delay = state.config.debounce_ms;
-                        if delay <= 5000 {
-                            state.last_edit_time =
-                                Some(Instant::now() - Duration::from_millis(delay));
-                        } else {
-                            state.pending_recheck = false;
-                        }
                     }
                 }
                 ApiResponse::GrammarError {
@@ -666,17 +644,6 @@ fn process_api_responses(state: &mut State) {
                         state.current_check_request_id = None;
                         state.current_check_revision = None;
                         state.pending_check_text = None;
-
-                        if state.pending_recheck {
-                            state.status = "Rechecking...".to_string();
-                            let delay = state.config.debounce_ms;
-                            if delay <= 5000 {
-                                state.last_edit_time =
-                                    Some(Instant::now() - Duration::from_millis(delay));
-                            } else {
-                                state.pending_recheck = false;
-                            }
-                        }
                         continue;
                     }
 
@@ -684,17 +651,6 @@ fn process_api_responses(state: &mut State) {
                     state.current_check_request_id = None;
                     state.current_check_revision = None;
                     state.status = message;
-
-                    if state.pending_recheck {
-                        let delay = state.config.debounce_ms;
-                        // Only recheck if auto-check is enabled (<= 5000)
-                        if delay <= 5000 {
-                            state.last_edit_time =
-                                Some(Instant::now() - Duration::from_millis(delay));
-                        } else {
-                            state.pending_recheck = false; // Cancel pending recheck if disabled
-                        }
-                    }
                 }
                 ApiResponse::TestSuccess { request_id } => {
                     if state.current_test_request_id != Some(request_id) {
@@ -717,12 +673,34 @@ fn process_api_responses(state: &mut State) {
                     state.current_test_request_id = None;
                     state.test_status = message;
                 }
-                ApiResponse::ModelsSuccess { models, provider } => {
-                    match provider {
-                        ApiProvider::OpenAI => state.openai_models = models,
-                        ApiProvider::OpenRouter => state.openrouter_models = models,
-                        ApiProvider::Gemini => state.gemini_models = models,
+                ApiResponse::ModelsSuccess {
+                    models,
+                    provider,
+                    request_id,
+                } => {
+                    if models_request_id_for_provider(state, &provider) != Some(request_id) {
+                        continue;
                     }
+                    clear_models_request_id_for_provider(state, &provider);
+
+                    match provider {
+                        ApiProvider::OpenAI => {
+                            state.openai_models = models;
+                            state.openai_models_loaded_for_key =
+                                Some(state.temp_openai_api_key.trim().to_string());
+                        }
+                        ApiProvider::OpenRouter => {
+                            state.openrouter_models = models;
+                            state.openrouter_models_loaded_for_key =
+                                Some(state.temp_openrouter_api_key.trim().to_string());
+                        }
+                        ApiProvider::Gemini => {
+                            state.gemini_models = models;
+                            state.gemini_models_loaded_for_key =
+                                Some(state.temp_gemini_api_key.trim().to_string());
+                        }
+                    }
+
                     if provider == state.temp_provider {
                         let models = match state.temp_provider {
                             ApiProvider::OpenAI => &state.openai_models,
@@ -733,8 +711,20 @@ fn process_api_responses(state: &mut State) {
                             iced::widget::combo_box::State::new(models.clone());
                     }
                 }
-                ApiResponse::ModelsError { message } => {
-                    eprintln!("[DEBUG] Failed to fetch models: {}", message);
+                ApiResponse::ModelsError {
+                    message,
+                    provider,
+                    request_id,
+                } => {
+                    if models_request_id_for_provider(state, &provider) != Some(request_id) {
+                        continue;
+                    }
+                    clear_models_request_id_for_provider(state, &provider);
+                    eprintln!(
+                        "[DEBUG] Failed to fetch models (provider={}): {}",
+                        provider.name(),
+                        message
+                    );
                 }
             },
             Err(TryRecvError::Empty) => break,
@@ -746,43 +736,334 @@ fn process_api_responses(state: &mut State) {
     }
 }
 
-fn fetch_models_if_needed(state: &mut State) {
-    let api_key = match state.temp_provider {
-        ApiProvider::OpenAI => &state.temp_openai_api_key,
-        ApiProvider::OpenRouter => &state.temp_openrouter_api_key,
-        ApiProvider::Gemini => &state.temp_gemini_api_key,
-    };
-
-    if api_key.is_empty() {
+fn cancel_inflight_grammar_check(state: &mut State) {
+    if !state.is_checking {
         return;
     }
 
-    // Check if we already have models for this provider
-    let has_models = match state.temp_provider {
-        ApiProvider::OpenAI => !state.openai_models.is_empty(),
-        ApiProvider::OpenRouter => !state.openrouter_models.is_empty(),
-        ApiProvider::Gemini => !state.gemini_models.is_empty(),
-    };
+    state.is_checking = false;
+    state.current_check_request_id = None;
+    state.current_check_revision = None;
+    state.pending_check_text = None;
 
-    if has_models {
-        let models = match state.temp_provider {
-            ApiProvider::OpenAI => &state.openai_models,
-            ApiProvider::OpenRouter => &state.openrouter_models,
-            ApiProvider::Gemini => &state.gemini_models,
-        };
-        state.model_combo_state = iced::widget::combo_box::State::new(models.clone());
+    let request = ApiRequest {
+        job: ApiJob::CancelGrammar,
+        request_id: crate::api::next_request_id(),
+    };
+    let _ = state.api_sender.send(request);
+}
+
+fn schedule_models_fetch(state: &mut State) {
+    // Debounce model fetching so we don't hammer /models while the user types an API key.
+    state.models_fetch_debounce_start = Some(Instant::now());
+}
+
+fn tick_models_fetch_debounce(state: &mut State) {
+    if !state.show_settings {
+        state.models_fetch_debounce_start = None;
+        return;
     }
 
-    let request_id = crate::api::next_request_id();
-    let request = ApiRequest {
-        job: ApiJob::FetchModels {
-            api_key: api_key.clone(),
-            provider: state.temp_provider.clone(),
-        },
-        request_id,
+    let Some(start) = state.models_fetch_debounce_start else {
+        return;
     };
 
-    let _ = state.api_sender.send(request);
+    if start.elapsed() < Duration::from_millis(MODELS_FETCH_DEBOUNCE_MS) {
+        return;
+    }
+
+    state.models_fetch_debounce_start = None;
+    fetch_models_if_needed(state);
+}
+
+fn invalidate_models_cache_for_provider(state: &mut State, provider: ApiProvider) {
+    let should_cancel = match provider {
+        ApiProvider::OpenAI => state.openai_models_request_id.is_some(),
+        ApiProvider::OpenRouter => state.openrouter_models_request_id.is_some(),
+        ApiProvider::Gemini => state.gemini_models_request_id.is_some(),
+    };
+
+    if should_cancel {
+        // Cancel any in-flight fetch and clear cached results to avoid showing models for the wrong key.
+        let request = ApiRequest {
+            job: ApiJob::CancelModels {
+                provider: provider.clone(),
+            },
+            request_id: crate::api::next_request_id(),
+        };
+        let _ = state.api_sender.send(request);
+    }
+
+    match provider {
+        ApiProvider::OpenAI => {
+            state.openai_models.clear();
+            state.openai_models_loaded_for_key = None;
+            state.openai_models_request_id = None;
+        }
+        ApiProvider::OpenRouter => {
+            state.openrouter_models.clear();
+            state.openrouter_models_loaded_for_key = None;
+            state.openrouter_models_request_id = None;
+        }
+        ApiProvider::Gemini => {
+            state.gemini_models.clear();
+            state.gemini_models_loaded_for_key = None;
+            state.gemini_models_request_id = None;
+        }
+    }
+
+    if provider == state.temp_provider {
+        state.model_combo_state = iced::widget::combo_box::State::new(Vec::new());
+    }
+}
+
+fn models_request_id_for_provider(state: &State, provider: &ApiProvider) -> Option<u64> {
+    match provider {
+        ApiProvider::OpenAI => state.openai_models_request_id,
+        ApiProvider::OpenRouter => state.openrouter_models_request_id,
+        ApiProvider::Gemini => state.gemini_models_request_id,
+    }
+}
+
+fn clear_models_request_id_for_provider(state: &mut State, provider: &ApiProvider) {
+    match provider {
+        ApiProvider::OpenAI => state.openai_models_request_id = None,
+        ApiProvider::OpenRouter => state.openrouter_models_request_id = None,
+        ApiProvider::Gemini => state.gemini_models_request_id = None,
+    }
+}
+
+fn clamp_to_char_boundary(s: &str, mut idx: usize, direction: i32) -> usize {
+    idx = idx.min(s.len());
+    while idx > 0 && idx < s.len() && !s.is_char_boundary(idx) {
+        if direction < 0 {
+            idx = idx.saturating_sub(1);
+        } else {
+            idx = (idx + 1).min(s.len());
+        }
+    }
+    idx
+}
+
+fn truncate_string_middle(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    if max_len <= 3 {
+        return ".".repeat(max_len);
+    }
+
+    let head_len = (max_len - 3) / 2;
+    let tail_len = max_len - 3 - head_len;
+
+    let head_end = clamp_to_char_boundary(s, head_len, -1);
+    let tail_start = clamp_to_char_boundary(s, s.len().saturating_sub(tail_len), -1);
+
+    let mut out = String::new();
+    out.push_str(&s[..head_end]);
+    out.push_str("...");
+    out.push_str(&s[tail_start..]);
+    out
+}
+
+fn excerpt_with_focus(text: &str, focus_start: usize, focus_end: usize, max_len: usize) -> String {
+    if text.is_empty() || max_len == 0 {
+        return String::new();
+    }
+
+    let focus_start = clamp_to_char_boundary(text, focus_start, -1);
+    let focus_end = clamp_to_char_boundary(text, focus_end.min(text.len()), 1);
+    if focus_end <= focus_start {
+        return truncate_string_middle(text, max_len);
+    }
+
+    let focus_len = focus_end - focus_start;
+    let markers_len = 4; // << >>
+
+    if focus_len.saturating_add(markers_len) >= max_len {
+        let focus = &text[focus_start..focus_end];
+        return format!(
+            "<<{}>>",
+            truncate_string_middle(focus, max_len.saturating_sub(markers_len))
+        );
+    }
+
+    let remaining = max_len - focus_len - markers_len;
+    let before = remaining / 2;
+    let after = remaining - before;
+
+    let start = clamp_to_char_boundary(text, focus_start.saturating_sub(before), -1);
+    let end = clamp_to_char_boundary(text, (focus_end + after).min(text.len()), 1);
+
+    let mut snippet = String::new();
+    if start > 0 {
+        snippet.push_str("...");
+    }
+    snippet.push_str(&text[start..focus_start]);
+    snippet.push_str("<<");
+    snippet.push_str(&text[focus_start..focus_end]);
+    snippet.push_str(">>");
+    snippet.push_str(&text[focus_end..end]);
+    if end < text.len() {
+        snippet.push_str("...");
+    }
+
+    if snippet.len() > max_len {
+        return truncate_string_middle(&snippet, max_len);
+    }
+
+    snippet
+}
+
+fn build_history_user_content(text: &str, suggestions: &[Suggestion]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Text summary (len={}):\n", text.len()));
+
+    if suggestions.is_empty() {
+        out.push_str(&truncate_string_middle(text, HISTORY_NO_SUGGESTIONS_MAX_CHARS));
+        return out;
+    }
+
+    out.push_str(&format!(
+        "{} suggestion(s). Excerpts (showing up to {}):\n",
+        suggestions.len(),
+        HISTORY_MAX_EXCERPTS
+    ));
+
+    for (i, s) in suggestions.iter().take(HISTORY_MAX_EXCERPTS).enumerate() {
+        let start = s.offset;
+        let end = s.offset.saturating_add(s.length);
+        let snippet = excerpt_with_focus(text, start, end, HISTORY_EXCERPT_MAX_CHARS);
+        out.push_str(&format!("{}. {}\n", i + 1, snippet));
+    }
+
+    if suggestions.len() > HISTORY_MAX_EXCERPTS {
+        out.push_str(&format!(
+            "(plus {} more)",
+            suggestions.len() - HISTORY_MAX_EXCERPTS
+        ));
+    }
+
+    out
+}
+
+fn build_history_assistant_content(suggestions: &[Suggestion]) -> String {
+    if suggestions.is_empty() {
+        return r#"{"matches":[]}"#.to_string();
+    }
+
+    serde_json::to_string(&serde_json::json!({
+        "matches": suggestions.iter().take(HISTORY_MAX_MATCHES).map(|s| {
+            serde_json::json!({
+                "message": truncate_string_middle(&s.message, HISTORY_FIELD_MAX_CHARS),
+                "original": truncate_string_middle(&s.original, HISTORY_FIELD_MAX_CHARS),
+                "replacement": s.replacement.as_ref().map(|r| truncate_string_middle(r, HISTORY_FIELD_MAX_CHARS)),
+                "severity": format!("{:?}", s.severity).to_lowercase(),
+            })
+        }).collect::<Vec<_>>()
+    }))
+    .unwrap_or_else(|_| r#"{"matches":[]}"#.to_string())
+}
+
+fn fetch_models_if_needed(state: &mut State) {
+    match state.temp_provider {
+        ApiProvider::OpenAI => {
+            let api_key = state.temp_openai_api_key.trim().to_string();
+            if api_key.is_empty() {
+                return;
+            }
+
+            if state.openai_models_request_id.is_some() {
+                return;
+            }
+
+            if !state.openai_models.is_empty()
+                && state
+                    .openai_models_loaded_for_key
+                    .as_deref()
+                    == Some(api_key.as_str())
+            {
+                state.model_combo_state =
+                    iced::widget::combo_box::State::new(state.openai_models.clone());
+                return;
+            }
+
+            let request_id = crate::api::next_request_id();
+            state.openai_models_request_id = Some(request_id);
+            let request = ApiRequest {
+                job: ApiJob::FetchModels {
+                    api_key,
+                    provider: ApiProvider::OpenAI,
+                },
+                request_id,
+            };
+            let _ = state.api_sender.send(request);
+        }
+        ApiProvider::OpenRouter => {
+            let api_key = state.temp_openrouter_api_key.trim().to_string();
+            if api_key.is_empty() {
+                return;
+            }
+
+            if state.openrouter_models_request_id.is_some() {
+                return;
+            }
+
+            if !state.openrouter_models.is_empty()
+                && state
+                    .openrouter_models_loaded_for_key
+                    .as_deref()
+                    == Some(api_key.as_str())
+            {
+                state.model_combo_state =
+                    iced::widget::combo_box::State::new(state.openrouter_models.clone());
+                return;
+            }
+
+            let request_id = crate::api::next_request_id();
+            state.openrouter_models_request_id = Some(request_id);
+            let request = ApiRequest {
+                job: ApiJob::FetchModels {
+                    api_key,
+                    provider: ApiProvider::OpenRouter,
+                },
+                request_id,
+            };
+            let _ = state.api_sender.send(request);
+        }
+        ApiProvider::Gemini => {
+            let api_key = state.temp_gemini_api_key.trim().to_string();
+            if api_key.is_empty() {
+                return;
+            }
+
+            if state.gemini_models_request_id.is_some() {
+                return;
+            }
+
+            if !state.gemini_models.is_empty()
+                && state
+                    .gemini_models_loaded_for_key
+                    .as_deref()
+                    == Some(api_key.as_str())
+            {
+                state.model_combo_state =
+                    iced::widget::combo_box::State::new(state.gemini_models.clone());
+                return;
+            }
+
+            let request_id = crate::api::next_request_id();
+            state.gemini_models_request_id = Some(request_id);
+            let request = ApiRequest {
+                job: ApiJob::FetchModels {
+                    api_key,
+                    provider: ApiProvider::Gemini,
+                },
+                request_id,
+            };
+            let _ = state.api_sender.send(request);
+        }
+    }
 }
 
 fn rebuild_text_highlight_cache(state: &mut State) {

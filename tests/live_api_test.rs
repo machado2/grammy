@@ -7,15 +7,17 @@ use grammy::config::ApiProvider;
 
 #[tokio::test]
 async fn test_openai_grammar_check() {
-    let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-    if api_key.is_empty() {
-        return;
-    }
+    let api_key = match std::env::var("OPENAI_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => return,
+    };
+    let client = reqwest::Client::new();
 
     // "I has a cat" is a clear grammatical error
     let text = "I has a cat.".to_string();
 
     let (suggestions, _) = check_grammar(
+        &client,
         text,
         api_key,
         "gpt-4o-mini".to_string(), // verify with a cheap smart model
@@ -39,10 +41,11 @@ async fn test_openai_grammar_check() {
 
 #[tokio::test]
 async fn test_openai_comment_only() {
-    let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-    if api_key.is_empty() {
-        return;
-    }
+    let api_key = match std::env::var("OPENAI_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => return,
+    };
+    let client = reqwest::Client::new();
 
     // Try to trigger a comment by asking something ambiguous or just wrong in a fact way?
     // It's hard to force the model to *only* comment, but we can verify the struct parsing works
@@ -54,6 +57,7 @@ async fn test_openai_comment_only() {
     let text = "The ambiguous sentence.".to_string();
 
     let _ = check_grammar(
+        &client,
         text,
         api_key,
         "gpt-4o-mini".to_string(),
