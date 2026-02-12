@@ -5,7 +5,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
-use crate::config::ApiProvider;
+use crate::config::{ApiProvider, ReasoningEffort};
 use crate::suggestion::Severity;
 
 use super::state::{Message, State};
@@ -448,6 +448,30 @@ fn settings_content(state: &State) -> Element<'_, Message> {
     .spacing(12)
     .align_y(Alignment::Center);
 
+    let reasoning_row = row![
+        provider_button(
+            ReasoningEffort::Default.label(),
+            state.temp_reasoning_effort == ReasoningEffort::Default,
+            Message::SelectReasoningEffort(ReasoningEffort::Default)
+        ),
+        provider_button(
+            ReasoningEffort::Low.label(),
+            state.temp_reasoning_effort == ReasoningEffort::Low,
+            Message::SelectReasoningEffort(ReasoningEffort::Low)
+        ),
+        provider_button(
+            ReasoningEffort::Medium.label(),
+            state.temp_reasoning_effort == ReasoningEffort::Medium,
+            Message::SelectReasoningEffort(ReasoningEffort::Medium)
+        ),
+        provider_button(
+            ReasoningEffort::High.label(),
+            state.temp_reasoning_effort == ReasoningEffort::High,
+            Message::SelectReasoningEffort(ReasoningEffort::High)
+        ),
+    ]
+    .spacing(8);
+
     let test_status: Element<'_, Message> = if state.test_status.is_empty() {
         iced::widget::Space::new().height(0.0).into()
     } else {
@@ -513,6 +537,11 @@ fn settings_content(state: &State) -> Element<'_, Message> {
         iced::widget::Space::new().height(4.0),
         text("Auto-check Delay").size(14).color(COL_TEXT),
         debounce_slider,
+        text("Reasoning Effort").size(14).color(COL_TEXT),
+        reasoning_row,
+        text("Affects OpenAI/OpenRouter reasoning models only")
+            .size(12)
+            .color(COL_MUTED),
         iced::widget::Space::new().height(4.0),
         test_button,
         test_status,

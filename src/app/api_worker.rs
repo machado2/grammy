@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::api;
-use crate::config::ApiProvider;
+use crate::config::{ApiProvider, ReasoningEffort};
 use crate::suggestion::Suggestion;
 
 use super::history::HistoryEntry;
@@ -14,6 +14,7 @@ pub(super) enum ApiJob {
         api_key: String,
         model: String,
         provider: ApiProvider,
+        reasoning_effort: ReasoningEffort,
         history: Vec<HistoryEntry>,
     },
     TestConnection {
@@ -91,6 +92,7 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                     api_key,
                     model,
                     provider,
+                    reasoning_effort,
                     history,
                 } => {
                     if let Some((prev_id, prev)) = grammar_task.take() {
@@ -104,7 +106,14 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                     let client = client.clone();
                     let handle = rt.spawn(async move {
                         match api::check_grammar(
-                            &client, text, api_key, model, provider, request_id, history,
+                            &client,
+                            text,
+                            api_key,
+                            model,
+                            provider,
+                            reasoning_effort,
+                            request_id,
+                            history,
                         )
                         .await
                         {

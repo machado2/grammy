@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use iced::widget::text_editor;
 use iced::{window, Subscription, Task, Theme};
 
-use crate::config::{ApiProvider, Config};
+use crate::config::{ApiProvider, Config, ReasoningEffort};
 use crate::suggestion::Suggestion;
 
 use super::api_worker::{spawn_api_worker, ApiJob, ApiRequest, ApiResponse};
@@ -54,6 +54,7 @@ pub enum Message {
     TempGeminiKeyChanged(String),
     TempModelChanged(String),
     TempDebounceChanged(f32),
+    SelectReasoningEffort(ReasoningEffort),
     ModelSelected(String),
 
     SaveSettings,
@@ -89,6 +90,7 @@ pub struct State {
     pub(super) temp_model: String,
     pub(super) temp_provider: ApiProvider,
     pub(super) temp_debounce_ms: f32,
+    pub(super) temp_reasoning_effort: ReasoningEffort,
 
     pub(super) openai_models: Vec<String>,
     pub(super) openrouter_models: Vec<String>,
@@ -170,6 +172,7 @@ pub fn new() -> (State, Task<Message>) {
             temp_model: config.model,
             temp_provider: config.provider,
             temp_debounce_ms: config.debounce_ms as f32,
+            temp_reasoning_effort: config.reasoning_effort,
 
             openai_models: Vec::new(),
             openrouter_models: Vec::new(),
@@ -365,6 +368,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.temp_model = state.config.model.clone();
             state.temp_provider = state.config.provider.clone();
             state.temp_debounce_ms = state.config.debounce_ms as f32;
+            state.temp_reasoning_effort = state.config.reasoning_effort;
             state.show_api_key = false;
             state.test_status.clear();
             state.show_settings = true;
@@ -420,6 +424,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.temp_debounce_ms = v;
             Task::none()
         }
+        Message::SelectReasoningEffort(v) => {
+            state.temp_reasoning_effort = v;
+            Task::none()
+        }
         Message::ModelSelected(v) => {
             state.temp_model = v;
             Task::none()
@@ -436,6 +444,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.temp_model.trim().to_string()
             };
             state.config.debounce_ms = state.temp_debounce_ms as u64;
+            state.config.reasoning_effort = state.temp_reasoning_effort;
             state.config.save();
             state.show_settings = false;
             state.models_fetch_debounce_start = None;
@@ -567,6 +576,7 @@ fn check_text(state: &mut State) {
             api_key: state.config.api_key_for_provider(&state.config.provider),
             model: state.config.model.clone(),
             provider: state.config.provider.clone(),
+            reasoning_effort: state.config.reasoning_effort,
             history: state
                 .message_history
                 .get_entries_limited_pairs(HISTORY_MAX_CHARS)
@@ -618,7 +628,9 @@ fn process_api_responses(state: &mut State) {
                     if let Some(user_text) = state.pending_check_text.take() {
                         let user_content = build_history_user_content(&user_text, &suggestions);
                         let assistant_content = build_history_assistant_content(&suggestions);
-                        state.message_history.push_pair(user_content, assistant_content);
+                        state
+                            .message_history
+                            .push_pair(user_content, assistant_content);
                     }
 
                     state.suggestions = suggestions;
@@ -920,7 +932,10 @@ fn build_history_user_content(text: &str, suggestions: &[Suggestion]) -> String 
     out.push_str(&format!("Text summary (len={}):\n", text.len()));
 
     if suggestions.is_empty() {
-        out.push_str(&truncate_string_middle(text, HISTORY_NO_SUGGESTIONS_MAX_CHARS));
+        out.push_str(&truncate_string_middle(
+            text,
+            HISTORY_NO_SUGGESTIONS_MAX_CHARS,
+        ));
         return out;
     }
 
@@ -978,10 +993,7 @@ fn fetch_models_if_needed(state: &mut State) {
             }
 
             if !state.openai_models.is_empty()
-                && state
-                    .openai_models_loaded_for_key
-                    .as_deref()
-                    == Some(api_key.as_str())
+                && state.openai_models_loaded_for_key.as_deref() == Some(api_key.as_str())
             {
                 state.model_combo_state =
                     iced::widget::combo_box::State::new(state.openai_models.clone());
@@ -1010,10 +1022,7 @@ fn fetch_models_if_needed(state: &mut State) {
             }
 
             if !state.openrouter_models.is_empty()
-                && state
-                    .openrouter_models_loaded_for_key
-                    .as_deref()
-                    == Some(api_key.as_str())
+                && state.openrouter_models_loaded_for_key.as_deref() == Some(api_key.as_str())
             {
                 state.model_combo_state =
                     iced::widget::combo_box::State::new(state.openrouter_models.clone());
@@ -1042,10 +1051,7 @@ fn fetch_models_if_needed(state: &mut State) {
             }
 
             if !state.gemini_models.is_empty()
-                && state
-                    .gemini_models_loaded_for_key
-                    .as_deref()
-                    == Some(api_key.as_str())
+                && state.gemini_models_loaded_for_key.as_deref() == Some(api_key.as_str())
             {
                 state.model_combo_state =
                     iced::widget::combo_box::State::new(state.gemini_models.clone());

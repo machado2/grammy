@@ -34,6 +34,35 @@ impl ApiProvider {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ReasoningEffort {
+    #[default]
+    Default,
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ReasoningEffort::Default => "Default",
+            ReasoningEffort::Low => "Low",
+            ReasoningEffort::Medium => "Medium",
+            ReasoningEffort::High => "High",
+        }
+    }
+
+    pub fn as_api_str(&self) -> Option<&'static str> {
+        match self {
+            ReasoningEffort::Default => None,
+            ReasoningEffort::Low => Some("low"),
+            ReasoningEffort::Medium => Some("medium"),
+            ReasoningEffort::High => Some("high"),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
@@ -49,10 +78,16 @@ pub struct Config {
     pub provider: ApiProvider,
     #[serde(default = "default_debounce")]
     pub debounce_ms: u64,
+    #[serde(default = "default_reasoning_effort")]
+    pub reasoning_effort: ReasoningEffort,
 }
 
 fn default_debounce() -> u64 {
     3000
+}
+
+fn default_reasoning_effort() -> ReasoningEffort {
+    ReasoningEffort::Low
 }
 
 impl Default for Config {
@@ -65,6 +100,7 @@ impl Default for Config {
             model: "google/gemini-3-flash-preview".to_string(),
             provider: ApiProvider::OpenRouter,
             debounce_ms: 3000,
+            reasoning_effort: ReasoningEffort::Low,
         }
     }
 }

@@ -1,5 +1,5 @@
 use grammy::api::check_grammar;
-use grammy::config::ApiProvider;
+use grammy::config::{ApiProvider, ReasoningEffort};
 
 // These tests require valid API keys in environment variables
 // OPENAI_API_KEY
@@ -22,6 +22,7 @@ async fn test_openai_grammar_check() {
         api_key,
         "gpt-4o-mini".to_string(), // verify with a cheap smart model
         ApiProvider::OpenAI,
+        ReasoningEffort::Default,
         1,
         vec![], // No history for tests
     )
@@ -62,6 +63,7 @@ async fn test_openai_comment_only() {
         api_key,
         "gpt-4o-mini".to_string(),
         ApiProvider::OpenAI,
+        ReasoningEffort::Default,
         2,
         vec![], // No history for tests
     )

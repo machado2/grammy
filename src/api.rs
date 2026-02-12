@@ -1,5 +1,5 @@
 use crate::app::history::HistoryEntry;
-use crate::config::ApiProvider;
+use crate::config::{ApiProvider, ReasoningEffort};
 use crate::suggestion::{LlmMatch, LlmResponse, Suggestion};
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,6 +45,7 @@ pub async fn check_grammar(
     api_key: String,
     model: String,
     provider: ApiProvider,
+    reasoning_effort: ReasoningEffort,
     request_id: u64,
     history: Vec<HistoryEntry>,
 ) -> Result<(Vec<Suggestion>, u64), String> {
@@ -116,6 +117,19 @@ pub async fn check_grammar(
             "messages": messages,
             "response_format": { "type": "json_object" }
         });
+
+        if let Some(effort) = reasoning_effort.as_api_str() {
+            match provider {
+                ApiProvider::OpenAI => {
+                    body["reasoning_effort"] = json!(effort);
+                }
+                ApiProvider::OpenRouter => {
+                    body["reasoning"] = json!({ "effort": effort });
+                }
+                ApiProvider::Gemini => {}
+            }
+        }
+
         if provider == ApiProvider::OpenRouter {
             // OpenRouter provider routing: prioritize lowest-latency provider endpoint.
             // Docs: https://openrouter.ai/docs/features/provider-routing
@@ -305,7 +319,11 @@ pub async fn test_connection(
     Ok(request_id)
 }
 
-pub async fn fetch_models(client: &reqwest::Client, provider: ApiProvider, api_key: String) -> Result<Vec<String>, String> {
+pub async fn fetch_models(
+    client: &reqwest::Client,
+    provider: ApiProvider,
+    api_key: String,
+) -> Result<Vec<String>, String> {
     if api_key.is_empty() {
         return Ok(vec![]);
     }
