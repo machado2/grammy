@@ -3,9 +3,10 @@ use crate::config::{ApiProvider, ReasoningEffort};
 use crate::suggestion::{LlmMatch, LlmResponse, Suggestion};
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+const RESPONSE_BODY_TIMEOUT_SECS: u64 = 90;
 
 const SYSTEM_PROMPT: &str = r#"You are a strict English writing assistant.
 Your job: suggest edits ONLY for:
@@ -38,6 +39,10 @@ Severity levels:
 
 IMPORTANT: The "original" field must contain the EXACT substring from the input (copy it precisely, including spacing).
 If there is nothing to change, return {"matches": []}."#;
+
+fn log_preview(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
 
 pub async fn check_grammar(
     client: &reqwest::Client,
@@ -115,7 +120,8 @@ pub async fn check_grammar(
         let mut body = json!({
             "model": model,
             "messages": messages,
-            "response_format": { "type": "json_object" }
+            "response_format": { "type": "json_object" },
+            "stream": false
         });
 
         if let Some(effort) = reasoning_effort.as_api_str() {
@@ -130,11 +136,6 @@ pub async fn check_grammar(
             }
         }
 
-        if provider == ApiProvider::OpenRouter {
-            // OpenRouter provider routing: prioritize lowest-latency provider endpoint.
-            // Docs: https://openrouter.ai/docs/features/provider-routing
-            body["provider"] = json!({ "sort": "latency" });
-        }
         request = request
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&body);
@@ -157,31 +158,87 @@ pub async fn check_grammar(
     })?;
 
     let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<unknown>");
+    let content_length = response.content_length();
     eprintln!(
-        "[DEBUG #{request_id}] Response status: {} after {:?}",
+        "[DEBUG #{request_id}] Response status: {} after {:?} (content_type={}, content_length={:?})",
         status,
-        start.elapsed()
+        start.elapsed(),
+        content_type,
+        content_length
     );
 
+    eprintln!(
+        "[DEBUG #{request_id}] Reading response body with timeout={}s",
+        RESPONSE_BODY_TIMEOUT_SECS
+    );
+    let body_bytes = match tokio::time::timeout(
+        Duration::from_secs(RESPONSE_BODY_TIMEOUT_SECS),
+        response.bytes(),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => {
+            eprintln!("[DEBUG #{request_id}] Failed reading response body: {}", e);
+            return Err(format!("Failed reading response body: {}", e));
+        }
+        Err(_) => {
+            eprintln!(
+                "[DEBUG #{request_id}] Timed out reading response body after {}s",
+                RESPONSE_BODY_TIMEOUT_SECS
+            );
+            return Err(format!(
+                "Timed out reading response body after {}s",
+                RESPONSE_BODY_TIMEOUT_SECS
+            ));
+        }
+    };
+    eprintln!(
+        "[DEBUG #{request_id}] Response body read: {} bytes",
+        body_bytes.len()
+    );
+
+    let data: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            let body_preview = log_preview(String::from_utf8_lossy(&body_bytes).as_ref(), 300);
+            if !status.is_success() {
+                eprintln!(
+                    "[DEBUG #{request_id}] Non-JSON error response body (status={}): {}",
+                    status, body_preview
+                );
+                return Err(format!(
+                    "{} error ({}): {}",
+                    provider.name(),
+                    status,
+                    body_preview
+                ));
+            }
+
+            eprintln!(
+                "[DEBUG #{request_id}] Failed to parse response JSON: {} | body preview: {}",
+                e, body_preview
+            );
+            return Err(format!("Failed to parse response JSON: {}", e));
+        }
+    };
+
     if !status.is_success() {
-        let error_body: serde_json::Value = response.json().await.unwrap_or_default();
         let msg = if provider == ApiProvider::Gemini {
-            error_body["error"]["message"]
+            data["error"]["message"]
                 .as_str()
                 .unwrap_or("Unknown Gemini error")
         } else {
-            error_body["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown error")
+            data["error"]["message"].as_str().unwrap_or("Unknown error")
         };
         eprintln!("[DEBUG #{request_id}] API error: {} - {}", status, msg);
         return Err(format!("{} error ({}): {}", provider.name(), status, msg));
     }
-
-    let data: serde_json::Value = response.json().await.map_err(|e| {
-        eprintln!("[DEBUG #{request_id}] Failed to parse response: {}", e);
-        format!("Failed to parse response: {}", e)
-    })?;
 
     let content = if provider == ApiProvider::Gemini {
         data["candidates"][0]["content"]["parts"][0]["text"]
@@ -193,9 +250,16 @@ pub async fn check_grammar(
             .unwrap_or(r#"{"matches":[]}"#)
     };
 
+    if content == r#"{"matches":[]}"# {
+        eprintln!(
+            "[DEBUG #{request_id}] Response content path missing/empty for provider={}, falling back to empty matches",
+            provider.name()
+        );
+    }
+
     eprintln!(
         "[DEBUG #{request_id}] LLM response content: {}",
-        &content[..content.len().min(200)]
+        log_preview(content, 200)
     );
 
     let llm_response: LlmResponse = serde_json::from_str(content).map_err(|e| {
@@ -506,5 +570,13 @@ mod tests {
         // Should keep "I has" (starts at 0) and drop "has" (starts at 2, which is < 0+5)
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].original, "I has");
+    }
+
+    #[test]
+    fn test_log_preview_is_unicode_safe() {
+        let text = "é".repeat(150);
+        let preview = log_preview(&text, 101);
+        assert_eq!(preview.chars().count(), 101);
+        assert!(text.starts_with(&preview));
     }
 }

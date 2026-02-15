@@ -68,12 +68,23 @@ pub(super) enum ApiResponse {
     },
 }
 
+fn job_name(job: &ApiJob) -> &'static str {
+    match job {
+        ApiJob::Grammar { .. } => "Grammar",
+        ApiJob::TestConnection { .. } => "TestConnection",
+        ApiJob::FetchModels { .. } => "FetchModels",
+        ApiJob::CancelGrammar => "CancelGrammar",
+        ApiJob::CancelTestConnection => "CancelTestConnection",
+        ApiJob::CancelModels { .. } => "CancelModels",
+    }
+}
+
 pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Sender<ApiResponse>) {
     std::thread::spawn(move || {
         eprintln!("[DEBUG] API thread started");
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(180))
             .build()
             .expect("Failed to create HTTP client");
 
@@ -82,8 +93,20 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
         let mut models_tasks: HashMap<ApiProvider, (u64, tokio::task::JoinHandle<()>)> =
             HashMap::new();
 
-        while let Ok(req) = request_rx.recv() {
-            eprintln!("[DEBUG] API thread received request #{}", req.request_id);
+        loop {
+            let req = match request_rx.recv() {
+                Ok(req) => req,
+                Err(err) => {
+                    eprintln!("[DEBUG] API request channel disconnected: {}", err);
+                    break;
+                }
+            };
+
+            eprintln!(
+                "[DEBUG] API thread received request #{} ({})",
+                req.request_id,
+                job_name(&req.job)
+            );
             let request_id = req.request_id;
 
             match req.job {
@@ -99,8 +122,27 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                         if !prev.is_finished() {
                             eprintln!("[DEBUG] Cancelling grammar request #{}", prev_id);
                             prev.abort();
+                        } else {
+                            eprintln!(
+                                "[DEBUG] Previous grammar request #{} already completed",
+                                prev_id
+                            );
                         }
                     }
+
+                    let model_name = model.clone();
+                    let provider_name = provider.name().to_string();
+                    let text_len = text.len();
+                    let history_len = history.len();
+                    eprintln!(
+                        "[DEBUG #{}] Spawning grammar task (provider={}, model={}, text_len={}, history_entries={}, reasoning={:?})",
+                        request_id,
+                        provider_name,
+                        model_name,
+                        text_len,
+                        history_len,
+                        reasoning_effort
+                    );
 
                     let tx = response_tx.clone();
                     let client = client.clone();
@@ -118,16 +160,38 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                         .await
                         {
                             Ok((suggestions, req_id)) => {
-                                let _ = tx.send(ApiResponse::GrammarSuccess {
+                                eprintln!(
+                                    "[DEBUG #{}] Grammar completed, sending success (suggestions={})",
+                                    req_id,
+                                    suggestions.len()
+                                );
+                                if let Err(err) = tx.send(ApiResponse::GrammarSuccess {
                                     suggestions,
                                     request_id: req_id,
-                                });
+                                }) {
+                                    eprintln!(
+                                        "[DEBUG #{}] Failed to send GrammarSuccess to UI: {}",
+                                        req_id,
+                                        err
+                                    );
+                                }
                             }
                             Err(e) => {
-                                let _ = tx.send(ApiResponse::GrammarError {
+                                eprintln!(
+                                    "[DEBUG #{}] Grammar failed, sending error: {}",
+                                    request_id,
+                                    e
+                                );
+                                if let Err(err) = tx.send(ApiResponse::GrammarError {
                                     message: e,
                                     request_id,
-                                });
+                                }) {
+                                    eprintln!(
+                                        "[DEBUG #{}] Failed to send GrammarError to UI: {}",
+                                        request_id,
+                                        err
+                                    );
+                                }
                             }
                         }
                     });
@@ -205,7 +269,14 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                         if !prev.is_finished() {
                             eprintln!("[DEBUG] Cancelling grammar request #{}", prev_id);
                             prev.abort();
+                        } else {
+                            eprintln!(
+                                "[DEBUG] CancelGrammar received, but request #{} already completed",
+                                prev_id
+                            );
                         }
+                    } else {
+                        eprintln!("[DEBUG] CancelGrammar received, but no request was active");
                     }
                 }
                 ApiJob::CancelTestConnection => {

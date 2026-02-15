@@ -236,6 +236,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
 
             // Only clear suggestions if text actually changed
             if old_text != new_text {
+                let old_revision = state.editor_revision;
                 state.undo_stack.push(EditorSnapshot {
                     text: old_text,
                     cursor: old_cursor,
@@ -245,12 +246,21 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.hovered_suggestion = None;
                 state.editor_text = new_text;
                 state.editor_revision = state.editor_revision.wrapping_add(1);
+                eprintln!(
+                    "[DEBUG] Editor text changed (revision {} -> {}, text_len={})",
+                    old_revision,
+                    state.editor_revision,
+                    state.editor_text.len()
+                );
                 rebuild_text_highlight_cache(state);
                 rebuild_suggestion_highlight_cache(state);
                 refresh_highlight_settings(state);
                 state.last_edit_time = Some(Instant::now());
                 state.draft_dirty = true;
                 if state.is_checking {
+                    eprintln!(
+                        "[DEBUG] Editor change detected during check, cancelling active request"
+                    );
                     cancel_inflight_grammar_check(state);
                 }
             }
@@ -356,6 +366,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         }
 
         Message::ForceCheck => {
+            eprintln!(
+                "[DEBUG] ForceCheck requested at revision {} (previous last_checked_rev={:?})",
+                state.editor_revision, state.last_checked_revision
+            );
             state.last_checked_revision = None;
             check_text(state);
             Task::none()
@@ -533,16 +547,43 @@ fn tick_debounce(state: &mut State) {
             return;
         }
         if edit_time.elapsed() >= Duration::from_millis(delay) {
+            eprintln!(
+                "[DEBUG] Debounce fired at revision {} after {:?} (delay={}ms)",
+                state.editor_revision,
+                edit_time.elapsed(),
+                delay
+            );
             state.last_edit_time = None;
             check_text(state);
         }
     }
 }
 
+fn log_grammar_state(state: &State, context: &str) {
+    eprintln!(
+        "[DEBUG] {} | checking={} current_req={:?} current_req_rev={:?} editor_rev={} last_checked_rev={:?} pending_text_len={}",
+        context,
+        state.is_checking,
+        state.current_check_request_id,
+        state.current_check_revision,
+        state.editor_revision,
+        state.last_checked_revision,
+        state.pending_check_text.as_ref().map(|t| t.len()).unwrap_or(0)
+    );
+}
+
 fn check_text(state: &mut State) {
     let text = state.editor_text.clone();
+    eprintln!(
+        "[DEBUG] check_text called (editor_rev={}, last_checked_rev={:?}, text_len={})",
+        state.editor_revision,
+        state.last_checked_revision,
+        text.len()
+    );
+    log_grammar_state(state, "Before check_text decision");
 
     if text.trim().is_empty() {
+        eprintln!("[DEBUG] check_text: text is empty, cancelling in-flight request");
         cancel_inflight_grammar_check(state);
         state.suggestions.clear();
         state.hovered_suggestion = None;
@@ -554,6 +595,10 @@ fn check_text(state: &mut State) {
     }
 
     if state.last_checked_revision == Some(state.editor_revision) {
+        eprintln!(
+            "[DEBUG] check_text: skipping request, revision {} already checked",
+            state.editor_revision
+        );
         return;
     }
 
@@ -589,13 +634,31 @@ fn check_text(state: &mut State) {
 
     // Store the text for later use in history
     state.pending_check_text = Some(text);
+    eprintln!(
+        "[DEBUG #{}] Prepared grammar request (revision={}, provider={}, model={})",
+        request_id,
+        state.editor_revision,
+        state.config.provider.name(),
+        state.config.model
+    );
+    log_grammar_state(state, "After preparing grammar request");
 
-    if let Err(e) = state.api_sender.send(request) {
-        state.status = format!("Internal error: failed to send request ({})", e);
-        state.is_checking = false;
-        state.current_check_request_id = None;
-        state.current_check_revision = None;
-        state.last_checked_revision = None;
+    match state.api_sender.send(request) {
+        Ok(()) => {
+            eprintln!("[DEBUG #{}] Grammar request sent to API worker", request_id);
+        }
+        Err(e) => {
+            eprintln!(
+                "[DEBUG #{}] Failed to send grammar request to worker: {}",
+                request_id, e
+            );
+            state.status = format!("Internal error: failed to send request ({})", e);
+            state.is_checking = false;
+            state.current_check_request_id = None;
+            state.current_check_revision = None;
+            state.last_checked_revision = None;
+            log_grammar_state(state, "After send failure");
+        }
     }
 }
 
@@ -607,16 +670,36 @@ fn process_api_responses(state: &mut State) {
                     suggestions,
                     request_id,
                 } => {
+                    eprintln!(
+                        "[DEBUG #{}] Received GrammarSuccess (suggestions={}), current_req={:?}, current_req_rev={:?}, editor_rev={}",
+                        request_id,
+                        suggestions.len(),
+                        state.current_check_request_id,
+                        state.current_check_revision,
+                        state.editor_revision
+                    );
                     if state.current_check_request_id != Some(request_id) {
+                        eprintln!(
+                            "[DEBUG #{}] Dropping GrammarSuccess as stale (expected current_req={:?})",
+                            request_id,
+                            state.current_check_request_id
+                        );
                         continue;
                     }
 
                     // If text changed since the request was sent, drop this response.
                     if state.current_check_revision != Some(state.editor_revision) {
+                        eprintln!(
+                            "[DEBUG #{}] Dropping GrammarSuccess due to revision mismatch (request_rev={:?}, current_editor_rev={})",
+                            request_id,
+                            state.current_check_revision,
+                            state.editor_revision
+                        );
                         state.is_checking = false;
                         state.current_check_request_id = None;
                         state.current_check_revision = None;
                         state.pending_check_text = None;
+                        log_grammar_state(state, "After dropping GrammarSuccess");
                         continue;
                     }
 
@@ -641,21 +724,46 @@ fn process_api_responses(state: &mut State) {
                     } else {
                         state.status = format!("{} suggestion(s)", state.suggestions.len());
                     }
+                    eprintln!(
+                        "[DEBUG #{}] Applied GrammarSuccess, status='{}'",
+                        request_id, state.status
+                    );
+                    log_grammar_state(state, "After applying GrammarSuccess");
                 }
                 ApiResponse::GrammarError {
                     message,
                     request_id,
                 } => {
+                    eprintln!(
+                        "[DEBUG #{}] Received GrammarError '{}', current_req={:?}, current_req_rev={:?}, editor_rev={}",
+                        request_id,
+                        message,
+                        state.current_check_request_id,
+                        state.current_check_revision,
+                        state.editor_revision
+                    );
                     if state.current_check_request_id != Some(request_id) {
+                        eprintln!(
+                            "[DEBUG #{}] Dropping GrammarError as stale (expected current_req={:?})",
+                            request_id,
+                            state.current_check_request_id
+                        );
                         continue;
                     }
 
                     // If text changed since the request was sent, drop this error.
                     if state.current_check_revision != Some(state.editor_revision) {
+                        eprintln!(
+                            "[DEBUG #{}] Dropping GrammarError due to revision mismatch (request_rev={:?}, current_editor_rev={})",
+                            request_id,
+                            state.current_check_revision,
+                            state.editor_revision
+                        );
                         state.is_checking = false;
                         state.current_check_request_id = None;
                         state.current_check_revision = None;
                         state.pending_check_text = None;
+                        log_grammar_state(state, "After dropping GrammarError");
                         continue;
                     }
 
@@ -663,6 +771,11 @@ fn process_api_responses(state: &mut State) {
                     state.current_check_request_id = None;
                     state.current_check_revision = None;
                     state.status = message;
+                    eprintln!(
+                        "[DEBUG #{}] Applied GrammarError, status='{}'",
+                        request_id, state.status
+                    );
+                    log_grammar_state(state, "After applying GrammarError");
                 }
                 ApiResponse::TestSuccess { request_id } => {
                     if state.current_test_request_id != Some(request_id) {
@@ -741,7 +854,20 @@ fn process_api_responses(state: &mut State) {
             },
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
+                eprintln!("[DEBUG] API response channel disconnected while processing responses");
+                log_grammar_state(state, "Before handling API thread disconnect");
+                state.is_checking = false;
+                state.current_check_request_id = None;
+                state.current_check_revision = None;
+                state.pending_check_text = None;
+                state.is_testing = false;
+                state.current_test_request_id = None;
+                state.openai_models_request_id = None;
+                state.openrouter_models_request_id = None;
+                state.gemini_models_request_id = None;
+                state.models_fetch_debounce_start = None;
                 state.status = "Internal error: API thread died".to_string();
+                log_grammar_state(state, "After handling API thread disconnect");
                 break;
             }
         }
@@ -750,19 +876,38 @@ fn process_api_responses(state: &mut State) {
 
 fn cancel_inflight_grammar_check(state: &mut State) {
     if !state.is_checking {
+        eprintln!("[DEBUG] cancel_inflight_grammar_check called, but no check is active");
         return;
     }
 
+    let cancelled_request_id = state.current_check_request_id;
+    eprintln!(
+        "[DEBUG] Cancelling in-flight grammar from UI side (request_id={:?}, request_rev={:?}, editor_rev={})",
+        cancelled_request_id,
+        state.current_check_revision,
+        state.editor_revision
+    );
     state.is_checking = false;
     state.current_check_request_id = None;
     state.current_check_revision = None;
     state.pending_check_text = None;
+    log_grammar_state(state, "After clearing local in-flight grammar state");
 
     let request = ApiRequest {
         job: ApiJob::CancelGrammar,
         request_id: crate::api::next_request_id(),
     };
-    let _ = state.api_sender.send(request);
+    match state.api_sender.send(request) {
+        Ok(()) => {
+            eprintln!(
+                "[DEBUG] Sent CancelGrammar request for previous request_id={:?}",
+                cancelled_request_id
+            );
+        }
+        Err(e) => {
+            eprintln!("[DEBUG] Failed to send CancelGrammar request: {}", e);
+        }
+    }
 }
 
 fn schedule_models_fetch(state: &mut State) {
