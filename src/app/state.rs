@@ -71,8 +71,8 @@ pub struct State {
     pub(super) highlight_settings: highlight::Settings,
     pub(super) last_checked_revision: Option<u64>,
     pub(super) suggestions: Vec<Suggestion>,
-    pub(super) undo_stack: Vec<EditorSnapshot>,
-    pub(super) redo_stack: Vec<EditorSnapshot>,
+    undo_stack: Vec<EditorSnapshot>,
+    redo_stack: Vec<EditorSnapshot>,
 
     pub(super) draft_dirty: bool,
 
@@ -255,7 +255,6 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 rebuild_text_highlight_cache(state);
                 rebuild_suggestion_highlight_cache(state);
                 refresh_highlight_settings(state);
-                state.last_edit_time = Some(Instant::now());
                 state.draft_dirty = true;
                 if state.is_checking {
                     eprintln!(
@@ -263,6 +262,11 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     cancel_inflight_grammar_check(state);
                 }
+                set_pending_check_state(
+                    state,
+                    "Waiting to check...",
+                    "Auto-check disabled. Press Check again.",
+                );
             }
             Task::none()
         }
@@ -282,11 +286,15 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.hovered_suggestion = None;
                     rebuild_suggestion_highlight_cache(state);
                     refresh_highlight_settings(state);
-                    state.last_edit_time = Some(Instant::now());
                     state.draft_dirty = true;
                     if state.is_checking {
                         cancel_inflight_grammar_check(state);
                     }
+                    set_pending_check_state(
+                        state,
+                        "Waiting to check...",
+                        "Auto-check disabled. Press Check again.",
+                    );
                 }
             }
             Task::none()
@@ -307,11 +315,15 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.hovered_suggestion = None;
                     rebuild_suggestion_highlight_cache(state);
                     refresh_highlight_settings(state);
-                    state.last_edit_time = Some(Instant::now());
                     state.draft_dirty = true;
                     if state.is_checking {
                         cancel_inflight_grammar_check(state);
                     }
+                    set_pending_check_state(
+                        state,
+                        "Waiting to check...",
+                        "Auto-check disabled. Press Check again.",
+                    );
                 }
             }
             Task::none()
@@ -463,6 +475,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.show_settings = false;
             state.models_fetch_debounce_start = None;
             state.status = "Settings saved".to_string();
+            sync_pending_check_state_with_config(state);
             Task::none()
         }
 
@@ -492,6 +505,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             };
 
             if let Err(e) = state.api_sender.send(request) {
+                eprintln!(
+                    "[DEBUG #{}] Failed to send test connection request to worker: {}",
+                    request_id, e
+                );
                 state.is_testing = false;
                 state.current_test_request_id = None;
                 state.test_status = format!("Internal error: failed to send test ({})", e);
@@ -542,8 +559,15 @@ fn tick_debounce(state: &mut State) {
 
     if let Some(edit_time) = state.last_edit_time {
         let delay = state.config.debounce_ms;
-        // If delay > 5000, we treat it as "Never"
-        if delay > 5000 {
+        if !auto_check_enabled(delay) {
+            eprintln!(
+                "[DEBUG] Clearing pending debounce at revision {} because auto-check is disabled",
+                state.editor_revision
+            );
+            state.last_edit_time = None;
+            if has_unchecked_changes(state) && !state.is_checking {
+                state.status = "Auto-check disabled. Press Check again.".to_string();
+            }
             return;
         }
         if edit_time.elapsed() >= Duration::from_millis(delay) {
@@ -557,6 +581,71 @@ fn tick_debounce(state: &mut State) {
             check_text(state);
         }
     }
+}
+
+pub(super) fn auto_check_enabled(debounce_ms: u64) -> bool {
+    debounce_ms <= 5000
+}
+
+pub(super) fn has_unchecked_changes(state: &State) -> bool {
+    !state.editor_text.trim().is_empty()
+        && state.last_checked_revision != Some(state.editor_revision)
+}
+
+fn set_pending_check_state(state: &mut State, automatic_status: &str, manual_status: &str) {
+    if state.editor_text.trim().is_empty() {
+        state.last_edit_time = None;
+        state.last_checked_revision = Some(state.editor_revision);
+        state.pending_check_text = None;
+        state.status = "Ready".to_string();
+        eprintln!(
+            "[DEBUG] Text is empty at revision {}, skipping pending check state",
+            state.editor_revision
+        );
+        return;
+    }
+
+    if auto_check_enabled(state.config.debounce_ms) {
+        state.status = automatic_status.to_string();
+        state.last_edit_time = Some(Instant::now());
+        eprintln!(
+            "[DEBUG] Scheduled debounced grammar check at revision {} (delay={}ms)",
+            state.editor_revision, state.config.debounce_ms
+        );
+    } else {
+        state.status = manual_status.to_string();
+        state.last_edit_time = None;
+        eprintln!(
+            "[DEBUG] Auto-check disabled at revision {}, waiting for manual check",
+            state.editor_revision
+        );
+    }
+}
+
+fn sync_pending_check_state_with_config(state: &mut State) {
+    if state.is_checking {
+        return;
+    }
+
+    if !auto_check_enabled(state.config.debounce_ms) {
+        if state.last_edit_time.is_some() {
+            eprintln!(
+                "[DEBUG] Clearing pending debounce at revision {} after saving settings",
+                state.editor_revision
+            );
+        }
+        state.last_edit_time = None;
+    }
+
+    if !has_unchecked_changes(state) {
+        return;
+    }
+
+    set_pending_check_state(
+        state,
+        "Waiting to check...",
+        "Auto-check disabled. Press Check again.",
+    );
 }
 
 fn log_grammar_state(state: &State, context: &str) {
@@ -657,6 +746,7 @@ fn check_text(state: &mut State) {
             state.current_check_request_id = None;
             state.current_check_revision = None;
             state.last_checked_revision = None;
+            state.pending_check_text = None;
             log_grammar_state(state, "After send failure");
         }
     }
@@ -778,7 +868,16 @@ fn process_api_responses(state: &mut State) {
                     log_grammar_state(state, "After applying GrammarError");
                 }
                 ApiResponse::TestSuccess { request_id } => {
+                    eprintln!(
+                        "[DEBUG #{}] Received TestSuccess, current_test_req={:?}",
+                        request_id, state.current_test_request_id
+                    );
                     if state.current_test_request_id != Some(request_id) {
+                        eprintln!(
+                            "[DEBUG #{}] Dropping TestSuccess as stale (expected current_test_req={:?})",
+                            request_id,
+                            state.current_test_request_id
+                        );
                         continue;
                     }
 
@@ -790,7 +889,16 @@ fn process_api_responses(state: &mut State) {
                     message,
                     request_id,
                 } => {
+                    eprintln!(
+                        "[DEBUG #{}] Received TestError '{}', current_test_req={:?}",
+                        request_id, message, state.current_test_request_id
+                    );
                     if state.current_test_request_id != Some(request_id) {
+                        eprintln!(
+                            "[DEBUG #{}] Dropping TestError as stale (expected current_test_req={:?})",
+                            request_id,
+                            state.current_test_request_id
+                        );
                         continue;
                     }
 
@@ -803,7 +911,19 @@ fn process_api_responses(state: &mut State) {
                     provider,
                     request_id,
                 } => {
+                    eprintln!(
+                        "[DEBUG #{}] Received ModelsSuccess (provider={}, count={}), current_models_req={:?}",
+                        request_id,
+                        provider.name(),
+                        models.len(),
+                        models_request_id_for_provider(state, &provider)
+                    );
                     if models_request_id_for_provider(state, &provider) != Some(request_id) {
+                        eprintln!(
+                            "[DEBUG #{}] Dropping ModelsSuccess as stale for provider={}",
+                            request_id,
+                            provider.name()
+                        );
                         continue;
                     }
                     clear_models_request_id_for_provider(state, &provider);
@@ -841,7 +961,19 @@ fn process_api_responses(state: &mut State) {
                     provider,
                     request_id,
                 } => {
+                    eprintln!(
+                        "[DEBUG #{}] Received ModelsError for provider={} '{}', current_models_req={:?}",
+                        request_id,
+                        provider.name(),
+                        message,
+                        models_request_id_for_provider(state, &provider)
+                    );
                     if models_request_id_for_provider(state, &provider) != Some(request_id) {
+                        eprintln!(
+                            "[DEBUG #{}] Dropping ModelsError as stale for provider={}",
+                            request_id,
+                            provider.name()
+                        );
                         continue;
                     }
                     clear_models_request_id_for_provider(state, &provider);
@@ -948,7 +1080,13 @@ fn invalidate_models_cache_for_provider(state: &mut State, provider: ApiProvider
             },
             request_id: crate::api::next_request_id(),
         };
-        let _ = state.api_sender.send(request);
+        if let Err(err) = state.api_sender.send(request) {
+            eprintln!(
+                "[DEBUG] Failed to send CancelModels request for provider={}: {}",
+                provider.name(),
+                err
+            );
+        }
     }
 
     match provider {
@@ -1130,16 +1268,19 @@ fn fetch_models_if_needed(state: &mut State) {
         ApiProvider::OpenAI => {
             let api_key = state.temp_openai_api_key.trim().to_string();
             if api_key.is_empty() {
+                eprintln!("[DEBUG] Skipping OpenAI models fetch because API key is empty");
                 return;
             }
 
             if state.openai_models_request_id.is_some() {
+                eprintln!("[DEBUG] OpenAI models fetch already in flight, skipping");
                 return;
             }
 
             if !state.openai_models.is_empty()
                 && state.openai_models_loaded_for_key.as_deref() == Some(api_key.as_str())
             {
+                eprintln!("[DEBUG] Reusing cached OpenAI models");
                 state.model_combo_state =
                     iced::widget::combo_box::State::new(state.openai_models.clone());
                 return;
@@ -1154,21 +1295,31 @@ fn fetch_models_if_needed(state: &mut State) {
                 },
                 request_id,
             };
-            let _ = state.api_sender.send(request);
+            eprintln!("[DEBUG #{}] Requesting OpenAI models", request_id);
+            if let Err(err) = state.api_sender.send(request) {
+                eprintln!(
+                    "[DEBUG #{}] Failed to send OpenAI models request: {}",
+                    request_id, err
+                );
+                state.openai_models_request_id = None;
+            }
         }
         ApiProvider::OpenRouter => {
             let api_key = state.temp_openrouter_api_key.trim().to_string();
             if api_key.is_empty() {
+                eprintln!("[DEBUG] Skipping OpenRouter models fetch because API key is empty");
                 return;
             }
 
             if state.openrouter_models_request_id.is_some() {
+                eprintln!("[DEBUG] OpenRouter models fetch already in flight, skipping");
                 return;
             }
 
             if !state.openrouter_models.is_empty()
                 && state.openrouter_models_loaded_for_key.as_deref() == Some(api_key.as_str())
             {
+                eprintln!("[DEBUG] Reusing cached OpenRouter models");
                 state.model_combo_state =
                     iced::widget::combo_box::State::new(state.openrouter_models.clone());
                 return;
@@ -1183,21 +1334,31 @@ fn fetch_models_if_needed(state: &mut State) {
                 },
                 request_id,
             };
-            let _ = state.api_sender.send(request);
+            eprintln!("[DEBUG #{}] Requesting OpenRouter models", request_id);
+            if let Err(err) = state.api_sender.send(request) {
+                eprintln!(
+                    "[DEBUG #{}] Failed to send OpenRouter models request: {}",
+                    request_id, err
+                );
+                state.openrouter_models_request_id = None;
+            }
         }
         ApiProvider::Gemini => {
             let api_key = state.temp_gemini_api_key.trim().to_string();
             if api_key.is_empty() {
+                eprintln!("[DEBUG] Skipping Gemini models fetch because API key is empty");
                 return;
             }
 
             if state.gemini_models_request_id.is_some() {
+                eprintln!("[DEBUG] Gemini models fetch already in flight, skipping");
                 return;
             }
 
             if !state.gemini_models.is_empty()
                 && state.gemini_models_loaded_for_key.as_deref() == Some(api_key.as_str())
             {
+                eprintln!("[DEBUG] Reusing cached Gemini models");
                 state.model_combo_state =
                     iced::widget::combo_box::State::new(state.gemini_models.clone());
                 return;
@@ -1212,7 +1373,14 @@ fn fetch_models_if_needed(state: &mut State) {
                 },
                 request_id,
             };
-            let _ = state.api_sender.send(request);
+            eprintln!("[DEBUG #{}] Requesting Gemini models", request_id);
+            if let Err(err) = state.api_sender.send(request) {
+                eprintln!(
+                    "[DEBUG #{}] Failed to send Gemini models request: {}",
+                    request_id, err
+                );
+                state.gemini_models_request_id = None;
+            }
         }
     }
 }
@@ -1253,15 +1421,21 @@ fn apply_suggestion(state: &mut State, suggestion_id: &str) {
     let end = suggestion.offset + suggestion.length;
 
     if start > text.len() || end > text.len() {
-        state.status = "Invalid suggestion range".to_string();
-        state.last_edit_time = Some(Instant::now());
+        set_pending_check_state(
+            state,
+            "Text changed; checking again...",
+            "Text changed. Press Check again.",
+        );
         return;
     }
 
     let slice = &text[start..end];
     if slice != suggestion.original {
-        state.status = "Text changed; re-checking...".to_string();
-        state.last_edit_time = Some(Instant::now());
+        set_pending_check_state(
+            state,
+            "Text changed; checking again...",
+            "Text changed. Press Check again.",
+        );
         return;
     }
 

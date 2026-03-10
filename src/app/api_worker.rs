@@ -27,7 +27,6 @@ pub(super) enum ApiJob {
         provider: ApiProvider,
     },
     CancelGrammar,
-    CancelTestConnection,
     CancelModels {
         provider: ApiProvider,
     },
@@ -74,7 +73,6 @@ fn job_name(job: &ApiJob) -> &'static str {
         ApiJob::TestConnection { .. } => "TestConnection",
         ApiJob::FetchModels { .. } => "FetchModels",
         ApiJob::CancelGrammar => "CancelGrammar",
-        ApiJob::CancelTestConnection => "CancelTestConnection",
         ApiJob::CancelModels { .. } => "CancelModels",
     }
 }
@@ -209,6 +207,12 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                         }
                     }
 
+                    eprintln!(
+                        "[DEBUG #{}] Spawning test connection task (provider={}, model={})",
+                        request_id,
+                        provider.name(),
+                        model
+                    );
                     let tx = response_tx.clone();
                     let client = client.clone();
                     let handle = rt.spawn(async move {
@@ -216,13 +220,33 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                             .await
                         {
                             Ok(req_id) => {
-                                let _ = tx.send(ApiResponse::TestSuccess { request_id: req_id });
+                                eprintln!(
+                                    "[DEBUG #{}] Test connection succeeded, sending success",
+                                    req_id
+                                );
+                                if let Err(err) =
+                                    tx.send(ApiResponse::TestSuccess { request_id: req_id })
+                                {
+                                    eprintln!(
+                                        "[DEBUG #{}] Failed to send TestSuccess to UI: {}",
+                                        req_id, err
+                                    );
+                                }
                             }
                             Err(e) => {
-                                let _ = tx.send(ApiResponse::TestError {
+                                eprintln!(
+                                    "[DEBUG #{}] Test connection failed, sending error: {}",
+                                    request_id, e
+                                );
+                                if let Err(err) = tx.send(ApiResponse::TestError {
                                     message: e,
                                     request_id,
-                                });
+                                }) {
+                                    eprintln!(
+                                        "[DEBUG #{}] Failed to send TestError to UI: {}",
+                                        request_id, err
+                                    );
+                                }
                             }
                         }
                     });
@@ -240,25 +264,54 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                         }
                     }
 
+                    eprintln!(
+                        "[DEBUG #{}] Spawning models fetch task (provider={})",
+                        request_id,
+                        provider.name()
+                    );
                     let tx = response_tx.clone();
                     let client = client.clone();
                     let provider_key = provider.clone();
                     let handle = rt.spawn(async move {
                         let provider_for_response = provider.clone();
-                        match api::fetch_models(&client, provider, api_key).await {
+                        match api::fetch_models(&client, provider, api_key, request_id).await {
                             Ok(models) => {
-                                let _ = tx.send(ApiResponse::ModelsSuccess {
+                                eprintln!(
+                                    "[DEBUG #{}] Models fetch succeeded, sending success (provider={}, count={})",
+                                    request_id,
+                                    provider_for_response.name(),
+                                    models.len()
+                                );
+                                if let Err(err) = tx.send(ApiResponse::ModelsSuccess {
                                     models,
                                     provider: provider_for_response,
                                     request_id,
-                                });
+                                }) {
+                                    eprintln!(
+                                        "[DEBUG #{}] Failed to send ModelsSuccess to UI: {}",
+                                        request_id,
+                                        err
+                                    );
+                                }
                             }
                             Err(e) => {
-                                let _ = tx.send(ApiResponse::ModelsError {
+                                eprintln!(
+                                    "[DEBUG #{}] Models fetch failed, sending error (provider={}): {}",
+                                    request_id,
+                                    provider_for_response.name(),
+                                    e
+                                );
+                                if let Err(err) = tx.send(ApiResponse::ModelsError {
                                     message: e,
                                     provider: provider_for_response,
                                     request_id,
-                                });
+                                }) {
+                                    eprintln!(
+                                        "[DEBUG #{}] Failed to send ModelsError to UI: {}",
+                                        request_id,
+                                        err
+                                    );
+                                }
                             }
                         }
                     });
@@ -277,14 +330,6 @@ pub(super) fn spawn_api_worker(request_rx: Receiver<ApiRequest>, response_tx: Se
                         }
                     } else {
                         eprintln!("[DEBUG] CancelGrammar received, but no request was active");
-                    }
-                }
-                ApiJob::CancelTestConnection => {
-                    if let Some((prev_id, prev)) = test_task.take() {
-                        if !prev.is_finished() {
-                            eprintln!("[DEBUG] Cancelling test request #{}", prev_id);
-                            prev.abort();
-                        }
                     }
                 }
                 ApiJob::CancelModels { provider } => {

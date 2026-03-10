@@ -367,7 +367,7 @@ pub async fn test_connection(
 
     // If we're here, connection is OK. Now validate model if provided and not Gemini (which lists models already)
     // Actually, let's just check if the model is in the list of models for the provider.
-    let models = fetch_models(client, provider.clone(), api_key).await?;
+    let models = fetch_models(client, provider.clone(), api_key, request_id).await?;
     if !model.is_empty() && !models.iter().any(|m| m == &model) {
         return Err(format!(
             "Model '{}' not found for {}",
@@ -387,10 +387,22 @@ pub async fn fetch_models(
     client: &reqwest::Client,
     provider: ApiProvider,
     api_key: String,
+    request_id: u64,
 ) -> Result<Vec<String>, String> {
+    let start = Instant::now();
     if api_key.is_empty() {
+        eprintln!(
+            "[DEBUG #{request_id}] Skipping models fetch because API key is empty (provider={})",
+            provider.name()
+        );
         return Ok(vec![]);
     }
+
+    eprintln!(
+        "[DEBUG #{request_id}] Fetching models for provider={}",
+        provider.name()
+    );
+
     let url = match provider {
         ApiProvider::OpenAI => "https://api.openai.com/v1/models".to_string(),
         ApiProvider::OpenRouter => "https://openrouter.ai/api/v1/models".to_string(),
@@ -405,13 +417,46 @@ pub async fn fetch_models(
         request = request.header("Authorization", format!("Bearer {}", api_key));
     }
 
-    let response = request.send().await.map_err(|e| e.to_string())?;
+    let response = request.send().await.map_err(|e| {
+        eprintln!(
+            "[DEBUG #{request_id}] Models fetch network error after {:?}: {}",
+            start.elapsed(),
+            e
+        );
+        format!("Network error: {}", e)
+    })?;
 
-    if !response.status().is_success() {
-        return Err(format!("Failed to fetch models: {}", response.status()));
+    let status = response.status();
+    eprintln!(
+        "[DEBUG #{request_id}] Models response status: {} after {:?}",
+        status,
+        start.elapsed()
+    );
+
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_else(|err| {
+            eprintln!(
+                "[DEBUG #{request_id}] Failed to read models error body: {}",
+                err
+            );
+            "<unavailable>".to_string()
+        });
+        eprintln!(
+            "[DEBUG #{request_id}] Models fetch failed: {} - {}",
+            status,
+            log_preview(&body, 200)
+        );
+        return Err(format!("Failed to fetch models: {}", status));
     }
 
-    let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let data: serde_json::Value = response.json().await.map_err(|e| {
+        eprintln!(
+            "[DEBUG #{request_id}] Failed to parse models response after {:?}: {}",
+            start.elapsed(),
+            e
+        );
+        format!("Failed to parse models response: {}", e)
+    })?;
     let mut models = Vec::new();
 
     match provider {
@@ -438,6 +483,11 @@ pub async fn fetch_models(
     }
 
     models.sort();
+    eprintln!(
+        "[DEBUG #{request_id}] Models fetch succeeded in {:?} (count={})",
+        start.elapsed(),
+        models.len()
+    );
     Ok(models)
 }
 

@@ -8,7 +8,7 @@ use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding,
 use crate::config::{ApiProvider, ReasoningEffort};
 use crate::suggestion::Severity;
 
-use super::state::{Message, State};
+use super::state::{auto_check_enabled, has_unchecked_changes, Message, State};
 use super::style::{
     btn_ghost, btn_primary, btn_secondary, btn_success, editor_style, glass_container,
     glass_editor, rule_muted, text_input as style_text_input, COL_BG, COL_DANGER, COL_MUTED,
@@ -147,6 +147,9 @@ fn editor(state: &State) -> Element<'_, Message> {
 }
 
 fn suggestions_sidebar(state: &State) -> Element<'_, Message> {
+    let has_unchecked_changes = has_unchecked_changes(state);
+    let auto_check_enabled = auto_check_enabled(state.config.debounce_ms);
+
     let header = column![
         row![
             text("Suggestions")
@@ -177,6 +180,25 @@ fn suggestions_sidebar(state: &State) -> Element<'_, Message> {
     } else if state.is_checking {
         container(
             text("Checking...")
+                .size(14)
+                .style(|_t| iced::widget::text::Style {
+                    color: Some(COL_MUTED),
+                }),
+        )
+        .center_x(Fill)
+        .center_y(Fill)
+        .height(Fill)
+        .into()
+    } else if has_unchecked_changes {
+        let message = if auto_check_enabled {
+            "Text changed.\nChecking soon..."
+        } else {
+            "Auto-check is disabled.\nPress Check again."
+        };
+
+        container(
+            text(message)
+                .align_x(Alignment::Center)
                 .size(14)
                 .style(|_t| iced::widget::text::Style {
                     color: Some(COL_MUTED),

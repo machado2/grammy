@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
+
+const SLOW_CONFIG_IO_THRESHOLD: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ApiProvider {
@@ -107,7 +110,24 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Self {
-        let mut cfg: Self = confy::load("grammy", "config").unwrap_or_default();
+        let start = Instant::now();
+        let mut cfg: Self = match confy::load("grammy", "config") {
+            Ok(cfg) => {
+                let elapsed = start.elapsed();
+                if elapsed >= SLOW_CONFIG_IO_THRESHOLD {
+                    eprintln!("[DEBUG] Config load completed in {:?}", elapsed);
+                }
+                cfg
+            }
+            Err(err) => {
+                eprintln!(
+                    "[DEBUG] Failed to load config after {:?}: {}",
+                    start.elapsed(),
+                    err
+                );
+                Self::default()
+            }
+        };
 
         // Backward-compat migration: older versions stored a single api_key.
         if cfg.openai_api_key.trim().is_empty() {
@@ -122,7 +142,22 @@ impl Config {
     }
 
     pub fn save(&self) {
-        let _ = confy::store("grammy", "config", self.clone());
+        let start = Instant::now();
+        match confy::store("grammy", "config", self.clone()) {
+            Ok(()) => {
+                let elapsed = start.elapsed();
+                if elapsed >= SLOW_CONFIG_IO_THRESHOLD {
+                    eprintln!("[DEBUG] Config save completed in {:?}", elapsed);
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "[DEBUG] Failed to save config after {:?}: {}",
+                    start.elapsed(),
+                    err
+                );
+            }
+        }
     }
 
     pub fn api_key_for_provider(&self, provider: &ApiProvider) -> String {
