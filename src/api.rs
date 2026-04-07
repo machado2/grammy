@@ -42,6 +42,40 @@ fn log_preview(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
+fn build_openai_compatible_body(
+    model: &str,
+    messages: Vec<serde_json::Value>,
+    provider: &ApiProvider,
+    reasoning_effort: ReasoningEffort,
+) -> serde_json::Value {
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "response_format": { "type": "json_object" },
+        "stream": false
+    });
+
+    if let Some(effort) = reasoning_effort.as_api_str() {
+        match provider {
+            ApiProvider::OpenAI => {
+                body["reasoning_effort"] = json!(effort);
+            }
+            ApiProvider::OpenRouter => {
+                body["reasoning"] = json!({ "effort": effort });
+            }
+            ApiProvider::Gemini => {}
+        }
+    }
+
+    if *provider == ApiProvider::OpenRouter {
+        // Prevent routing to upstream providers that reject request-level
+        // features like JSON output or reasoning parameters.
+        body["provider"] = json!({ "require_parameters": true });
+    }
+
+    body
+}
+
 pub async fn check_grammar(
     client: &reqwest::Client,
     text: String,
@@ -115,24 +149,7 @@ pub async fn check_grammar(
         });
         request = request.json(&body);
     } else {
-        let mut body = json!({
-            "model": model,
-            "messages": messages,
-            "response_format": { "type": "json_object" },
-            "stream": false
-        });
-
-        if let Some(effort) = reasoning_effort.as_api_str() {
-            match provider {
-                ApiProvider::OpenAI => {
-                    body["reasoning_effort"] = json!(effort);
-                }
-                ApiProvider::OpenRouter => {
-                    body["reasoning"] = json!({ "effort": effort });
-                }
-                ApiProvider::Gemini => {}
-            }
-        }
+        let body = build_openai_compatible_body(&model, messages, &provider, reasoning_effort);
 
         request = request
             .header("Authorization", format!("Bearer {}", api_key))
@@ -234,8 +251,31 @@ pub async fn check_grammar(
         } else {
             data["error"]["message"].as_str().unwrap_or("Unknown error")
         };
-        eprintln!("[DEBUG #{request_id}] API error: {} - {}", status, msg);
-        return Err(format!("{} error ({}): {}", provider.name(), status, msg));
+        let metadata = data["error"]["metadata"].as_object();
+        let upstream_provider = metadata
+            .and_then(|m| m.get("provider_name"))
+            .and_then(|v| v.as_str());
+        let raw_detail = metadata
+            .and_then(|m| m.get("raw"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                metadata
+                    .and_then(|m| m.get("raw_error"))
+                    .and_then(|v| v.as_str())
+            });
+        eprintln!(
+            "[DEBUG #{request_id}] API error: {} - {} | provider={:?} | raw={:?}",
+            status, msg, upstream_provider, raw_detail
+        );
+
+        let detail = match (upstream_provider, raw_detail) {
+            (Some(upstream), Some(raw)) => format!("{msg} [provider={upstream}; raw={raw}]"),
+            (Some(upstream), None) => format!("{msg} [provider={upstream}]"),
+            (None, Some(raw)) => format!("{msg} [raw={raw}]"),
+            (None, None) => msg.to_string(),
+        };
+
+        return Err(format!("{} error ({}): {}", provider.name(), status, detail));
     }
 
     let content = if provider == ApiProvider::Gemini {
@@ -552,6 +592,39 @@ fn convert_matches_to_suggestions(text: &str, matches: Vec<LlmMatch>) -> Vec<Sug
 mod tests {
     use super::*;
     use crate::suggestion::Severity;
+    use serde_json::json;
+
+    #[test]
+    fn test_openrouter_body_requires_parameter_support() {
+        let body = build_openai_compatible_body(
+            "google/gemini-3-flash-preview",
+            vec![json!({ "role": "user", "content": "Text:\nI has a cat." })],
+            &ApiProvider::OpenRouter,
+            ReasoningEffort::Low,
+        );
+
+        assert_eq!(
+            body["provider"]["require_parameters"],
+            json!(true),
+            "OpenRouter requests should require provider parameter compatibility"
+        );
+        assert_eq!(body["reasoning"]["effort"], json!("low"));
+        assert_eq!(body["response_format"]["type"], json!("json_object"));
+    }
+
+    #[test]
+    fn test_openai_body_uses_reasoning_effort_field() {
+        let body = build_openai_compatible_body(
+            "gpt-4o-mini",
+            vec![json!({ "role": "user", "content": "Text:\nI has a cat." })],
+            &ApiProvider::OpenAI,
+            ReasoningEffort::Medium,
+        );
+
+        assert_eq!(body["reasoning_effort"], json!("medium"));
+        assert!(body.get("provider").is_none());
+        assert!(body.get("reasoning").is_none());
+    }
 
     #[test]
     fn test_normal_suggestion() {
