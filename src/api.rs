@@ -8,17 +8,20 @@ use std::time::{Duration, Instant};
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RESPONSE_BODY_TIMEOUT_SECS: u64 = 90;
 
-const SYSTEM_PROMPT: &str = r#"You are a strict English writing assistant.
-Your job: suggest edits ONLY for:
+const SYSTEM_PROMPT: &str = r#"You are a strict English grammar checker.
+Your job: suggest edits ONLY for clear, objective errors:
 1. Grammatical errors.
 2. Typos.
-3. Phrases that are clearly awkward or non-native sounding.
+3. Clearly incorrect word forms or agreement errors.
 
 Rules:
-- Do NOT suggest stylistic variations if the original is correct.
+- Do NOT suggest stylistic improvements.
+- Do NOT suggest rephrasing for awkwardness, tone, fluency, or naturalness.
 - Do NOT rewrite the text.
-- If a sentence is grammatically correct and clear, do NOT suggest anything.
-- If you have a comment (e.g., ambiguity) but no specific correction, leave "replacement" as null.
+- Do NOT suggest optional punctuation changes unless the original is clearly incorrect.
+- If a sentence is grammatically correct, do NOT suggest anything.
+- Only return matches when there is a specific incorrect substring and a specific correction.
+- Always provide a concrete replacement for each match.
 
 Return ONLY valid JSON with this exact schema:
 {
@@ -26,16 +29,11 @@ Return ONLY valid JSON with this exact schema:
     {
       "message": "explanation of the error",
       "original": "exact text to replace",
-      "replacement": "corrected text or null",
-      "severity": "error|warning|suggestion"
+      "replacement": "corrected text",
+      "severity": "error"
     }
   ]
 }
-
-Severity levels:
-- "error": Grammar errors, typos, incorrect word usage
-- "warning": Awkward phrasing, non-native sounding expressions
-- "suggestion": Minor improvements, optional enhancements
 
 IMPORTANT: The "original" field must contain the EXACT substring from the input (copy it precisely, including spacing).
 If there is nothing to change, return {"matches": []}."#;
@@ -495,15 +493,20 @@ fn convert_matches_to_suggestions(text: &str, matches: Vec<LlmMatch>) -> Vec<Sug
     let mut suggestions = Vec::new();
 
     for m in matches {
+        if m.severity != crate::suggestion::Severity::Error {
+            continue;
+        }
+
         if m.original.is_empty() {
             continue;
         }
 
-        // If we have a replacement, ensure it's different from original and not empty
-        if let Some(ref repl) = m.replacement {
-            if repl.is_empty() || repl == &m.original {
-                continue;
-            }
+        let Some(ref repl) = m.replacement else {
+            continue;
+        };
+
+        if repl.is_empty() || repl == &m.original {
+            continue;
         }
 
         let offset = if let Some(pos) = text.find(&m.original) {
@@ -577,9 +580,7 @@ mod tests {
         }];
 
         let suggestions = convert_matches_to_suggestions(text, matches);
-        assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0].original, "has");
-        assert!(suggestions[0].replacement.is_none());
+        assert_eq!(suggestions.len(), 0);
     }
 
     #[test]

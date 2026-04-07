@@ -12,6 +12,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+.codex
 
 # Env / secrets
 .env
