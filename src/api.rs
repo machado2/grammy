@@ -275,7 +275,12 @@ pub async fn check_grammar(
             (None, None) => msg.to_string(),
         };
 
-        return Err(format!("{} error ({}): {}", provider.name(), status, detail));
+        return Err(format!(
+            "{} error ({}): {}",
+            provider.name(),
+            status,
+            detail
+        ));
     }
 
     let content = if provider == ApiProvider::Gemini {
